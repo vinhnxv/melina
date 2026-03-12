@@ -428,7 +428,10 @@ pub fn scan_tmux_servers() -> Vec<TmuxServer> {
             }
             seen_sockets.push(socket_name.clone());
 
-            let lead_pid: u32 = suffix.parse().unwrap();
+            let lead_pid: u32 = suffix.parse().ok().filter(|&p| p > 0).unwrap_or(0);
+            if lead_pid == 0 {
+                continue; // Skip invalid PID
+            }
             let lead_alive = sys.process(Pid::from_u32(lead_pid)).is_some();
 
             // Get tmux server memory and start time

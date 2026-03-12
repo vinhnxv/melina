@@ -72,7 +72,7 @@ fn format_ts(epoch: u64) -> String {
 fn format_uptime(start_time: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|_| std::time::Duration::ZERO)
         .as_secs();
     let elapsed = now.saturating_sub(start_time);
     let hours = elapsed / 3600;
@@ -135,9 +135,9 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
         let cwd_short = tree.working_dir.as_deref()
             .and_then(|p| p.rsplit('/').next())
             .unwrap_or("");
-        let sid_short = tree.session_id.as_deref()
-            .map(|s| &s[..s.len().min(8)])
-            .unwrap_or("");
+        let sid_short: String = tree.session_id.as_deref()
+            .map(|s| s.chars().take(8).collect())
+            .unwrap_or_default();
         let tmux_label = tree.host_tmux.as_ref()
             .map(|t| format!("{} [{}]", t, t.server_pid))
             .unwrap_or_default();
