@@ -244,6 +244,322 @@ fn check_teammate_tasks(team: &TeamInfo, member_name: &str) -> (usize, Vec<Strin
     (completed, stuck)
 }
 
+// ── Zombie Detection & Cleanup ──────────────────────────────────
+
+/// A detected zombie entry — something that should be cleaned up.
+#[derive(Debug, Clone)]
+pub enum ZombieEntry {
+    /// A team whose owner process is dead.
+    Team {
+        name: String,
+        config_dir: std::path::PathBuf,
+        member_count: usize,
+        task_count: usize,
+    },
+    /// An orphan tmux server whose lead is dead.
+    OrphanTmux {
+        socket_name: String,
+        lead_pid: u32,
+        pane_count: usize,
+        server_pid: Option<u32>,
+    },
+}
+
+impl ZombieEntry {
+    /// Short description for display.
+    pub fn label(&self) -> String {
+        match self {
+            ZombieEntry::Team { name, member_count, task_count, .. } => {
+                format!("ZOMBIE TEAM: {} ({} members, {} tasks)", name, member_count, task_count)
+            }
+            ZombieEntry::OrphanTmux { socket_name, lead_pid, pane_count, .. } => {
+                format!("ORPHAN TMUX: {} (lead:{}, {} panes)", socket_name, lead_pid, pane_count)
+            }
+        }
+    }
+
+    /// Reason why this is considered a zombie.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            ZombieEntry::Team { .. } => "owner process is dead",
+            ZombieEntry::OrphanTmux { .. } => "lead process is dead",
+        }
+    }
+}
+
+/// Scan for zombie teams and orphan tmux servers without killing anything.
+pub fn scan_zombies() -> Vec<ZombieEntry> {
+    use crate::teams::{scan_teams, scan_tmux_servers};
+
+    let sys = System::new_all();
+    let teams = scan_teams();
+    let mut entries = Vec::new();
+
+    for team in &teams {
+        let report = check_team_health(team, &sys);
+        if !report.owner_alive {
+            entries.push(ZombieEntry::Team {
+                name: team.name.clone(),
+                config_dir: team.config_dir.clone(),
+                member_count: team.members.len(),
+                task_count: team.task_count,
+            });
+        }
+    }
+
+    let tmux_servers = scan_tmux_servers();
+    for srv in &tmux_servers {
+        if srv.is_orphan() {
+            entries.push(ZombieEntry::OrphanTmux {
+                socket_name: srv.socket_name.clone(),
+                lead_pid: srv.lead_pid,
+                pane_count: srv.panes.len(),
+                server_pid: srv.server_pid,
+            });
+        }
+    }
+
+    entries
+}
+
+/// Result of a kill_zombies operation.
+#[derive(Debug, Default)]
+pub struct KillZombiesResult {
+    /// Number of zombie teams cleaned up.
+    pub teams_cleaned: usize,
+    /// Number of orphan tmux servers killed.
+    pub tmux_cleaned: usize,
+    /// Error messages from failed operations.
+    pub errors: Vec<String>,
+}
+
+impl KillZombiesResult {
+    pub fn total(&self) -> usize {
+        self.teams_cleaned + self.tmux_cleaned
+    }
+}
+
+/// Kill all zombie teams and orphan tmux servers.
+///
+/// For zombie teams: kills tmux teammates, removes team/task directories.
+/// For orphan tmux servers: kills the tmux server process.
+pub fn kill_zombies() -> KillZombiesResult {
+    use crate::teams::{scan_teams, scan_tmux_servers, kill_tmux_server};
+
+    let sys = System::new_all();
+    let teams = scan_teams();
+    let mut result = KillZombiesResult::default();
+
+    for team in &teams {
+        let report = check_team_health(team, &sys);
+        if !report.owner_alive {
+            // Kill tmux teammates
+            for member in &team.members {
+                if member.name == "team-lead" {
+                    continue;
+                }
+                if !member.tmux_pane_id.is_empty() {
+                    let pane_id = &member.tmux_pane_id;
+                    let digits = &pane_id[1..];
+                    if !pane_id.starts_with('%') || digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+                        continue;
+                    }
+                    let _ = std::process::Command::new("tmux")
+                        .args(["kill-pane", "-t", pane_id])
+                        .output();
+                }
+            }
+
+            // Remove filesystem artifacts (with path validation)
+            let team_dir = team.config_dir.join("teams").join(&team.name);
+            let tasks_dir = team.config_dir.join("tasks").join(&team.name);
+
+            for dir in [&team_dir, &tasks_dir] {
+                if dir.exists() {
+                    match dir.canonicalize() {
+                        Ok(canonical) => {
+                            if canonical.to_string_lossy().contains("/.claude") {
+                                if let Err(e) = std::fs::remove_dir_all(&canonical) {
+                                    result.errors.push(format!("rm {}: {}", canonical.display(), e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            result.errors.push(format!("canonicalize {}: {}", dir.display(), e));
+                        }
+                    }
+                }
+            }
+
+            result.teams_cleaned += 1;
+        }
+    }
+
+    // Kill orphan tmux servers
+    let tmux_servers = scan_tmux_servers();
+    for srv in &tmux_servers {
+        if srv.is_orphan() {
+            if kill_tmux_server(&srv.socket_name) {
+                result.tmux_cleaned += 1;
+            } else {
+                result.errors.push(format!("failed to kill tmux server {}", srv.socket_name));
+            }
+        }
+    }
+
+    result
+}
+
+// ── Process Kill by PID ─────────────────────────────────────────
+
+/// Info about a process looked up by PID before killing.
+#[derive(Debug, Clone)]
+pub struct ProcessLookup {
+    pub pid: u32,
+    /// Human-readable label (agent name, process name, or pane agent).
+    pub label: String,
+    /// What kind of process this is.
+    pub kind: ProcessLookupKind,
+    /// Whether this is a Claude-related process (safe to kill).
+    pub is_claude: bool,
+}
+
+/// Classification of a looked-up process.
+#[derive(Debug, Clone)]
+pub enum ProcessLookupKind {
+    /// A tmux pane (shell or claude process inside claude-swarm).
+    TmuxPane {
+        socket_name: String,
+        pane_id: String,
+        agent_name: Option<String>,
+    },
+    /// A regular OS process.
+    Process {
+        name: String,
+        cmd_preview: String,
+    },
+    /// PID not found.
+    NotFound,
+}
+
+/// Look up a PID to get info about what it is. Does NOT kill anything.
+pub fn lookup_process(pid: u32) -> ProcessLookup {
+    use crate::teams::scan_tmux_servers;
+
+    let tmux_servers = scan_tmux_servers();
+
+    // Check if PID matches a tmux pane
+    for srv in &tmux_servers {
+        for pane in &srv.panes {
+            if pane.shell_pid == pid || pane.claude_pid == Some(pid) {
+                let label = pane.agent_name.as_deref().unwrap_or("shell").to_string();
+                return ProcessLookup {
+                    pid,
+                    label: format!("{} (tmux pane {} in {})", label, pane.pane_id, srv.socket_name),
+                    kind: ProcessLookupKind::TmuxPane {
+                        socket_name: srv.socket_name.clone(),
+                        pane_id: pane.pane_id.clone(),
+                        agent_name: pane.agent_name.clone(),
+                    },
+                    is_claude: true,
+                };
+            }
+        }
+    }
+
+    // Look up as regular OS process
+    let sys = System::new_all();
+    match sys.process(Pid::from_u32(pid)) {
+        Some(proc_) => {
+            let name = proc_.name().to_string_lossy().to_string();
+            let cmd_str: String = proc_.cmd().iter()
+                .map(|s| s.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let is_claude = cmd_str.contains("claude")
+                || cmd_str.contains("--agent-id")
+                || name.contains("claude");
+
+            let agent_name = cmd_str.split("--agent-name ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .unwrap_or(&name)
+                .to_string();
+
+            let cmd_preview = if cmd_str.len() > 80 {
+                format!("{}...", &cmd_str[..77])
+            } else {
+                cmd_str
+            };
+
+            ProcessLookup {
+                pid,
+                label: agent_name,
+                kind: ProcessLookupKind::Process { name, cmd_preview },
+                is_claude,
+            }
+        }
+        None => ProcessLookup {
+            pid,
+            label: "not found".to_string(),
+            kind: ProcessLookupKind::NotFound,
+            is_claude: false,
+        },
+    }
+}
+
+/// Kill a process by PID. Returns Ok(description) or Err(reason).
+///
+/// Safety: only kills claude-related processes. Refuses non-claude PIDs.
+pub fn kill_process(pid: u32) -> Result<String, String> {
+    let lookup = lookup_process(pid);
+
+    if !lookup.is_claude {
+        return match lookup.kind {
+            ProcessLookupKind::NotFound => Err(format!("PID {} not found", pid)),
+            ProcessLookupKind::Process { name, .. } =>
+                Err(format!("PID {} ({}) is not a Claude process", pid, name)),
+            _ => Err(format!("PID {} is not a Claude process", pid)),
+        };
+    }
+
+    match lookup.kind {
+        ProcessLookupKind::TmuxPane { socket_name, pane_id, agent_name } => {
+            let label = agent_name.as_deref().unwrap_or("shell");
+            // Kill the tmux pane
+            let digits = &pane_id[1..];
+            if pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                let result = std::process::Command::new("tmux")
+                    .args(["-L", &socket_name, "kill-pane", "-t", &pane_id])
+                    .output();
+                if result.is_ok_and(|o| o.status.success()) {
+                    return Ok(format!("Killed tmux pane {} ({})", pane_id, label));
+                }
+            }
+            // Fallback: kill the process directly
+            let sys = System::new_all();
+            if let Some(proc_) = sys.process(Pid::from_u32(pid)) {
+                if proc_.kill() {
+                    return Ok(format!("Killed PID {} ({})", pid, label));
+                }
+            }
+            Err(format!("Failed to kill PID {} ({})", pid, label))
+        }
+        ProcessLookupKind::Process { .. } => {
+            let sys = System::new_all();
+            if let Some(proc_) = sys.process(Pid::from_u32(pid)) {
+                if proc_.kill() {
+                    return Ok(format!("Killed PID {} ({})", pid, lookup.label));
+                }
+                return Err(format!("Failed to kill PID {} (permission denied?)", pid));
+            }
+            Err(format!("PID {} disappeared before kill", pid))
+        }
+        ProcessLookupKind::NotFound => Err(format!("PID {} not found", pid)),
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn is_pid_alive(pid: u32, sys: &System) -> bool {

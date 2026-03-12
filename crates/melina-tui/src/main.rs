@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees, check_team_health, resolve_tmux_pids, scan_tmux_servers, ChildKind, ClaudeSessionStatus, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees, check_team_health, resolve_tmux_pids, scan_tmux_servers, scan_zombies, kill_zombies, kill_process, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -22,17 +22,132 @@ fn main() -> Result<()> {
     let tick_rate = Duration::from_secs(2);
     let mut last_tick = Instant::now();
     let (mut trees, mut tmux_servers) = refresh();
+    let mut status_msg: Option<(String, Instant)> = None;
+    // Zombie confirmation dialog state
+    let mut zombie_dialog: Option<Vec<ZombieEntry>> = None;
+    // Kill-by-PID dialog state: list of selectable processes
+    let mut kill_dialog: KillDialogState = KillDialogState::Closed;
 
     loop {
-        terminal.draw(|frame| ui(frame, &trees, &tmux_servers))?;
+        terminal.draw(|frame| {
+            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()));
+            if let Some(ref zombies) = zombie_dialog {
+                draw_zombie_dialog(frame, zombies);
+            }
+            draw_kill_dialog(frame, &kill_dialog);
+        })?;
+
+        // Clear status message after 5 seconds
+        if status_msg.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(5)) {
+            status_msg = None;
+        }
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+                    // Kill-by-PID dialog mode
+                    if let KillDialogState::Selecting { ref entries, selected, .. } = kill_dialog {
+                        let count = entries.len();
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') => {
+                                kill_dialog = KillDialogState::Closed;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                kill_dialog.move_selection(count, -1);
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                kill_dialog.move_selection(count, 1);
+                            }
+                            KeyCode::Enter => {
+                                if selected < count {
+                                    let entry = entries[selected].clone();
+                                    kill_dialog = KillDialogState::Confirm { entry };
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    if let KillDialogState::Confirm { ref entry } = kill_dialog {
+                        let pid = entry.pid;
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                match kill_process(pid) {
+                                    Ok(msg) => status_msg = Some((msg, Instant::now())),
+                                    Err(msg) => status_msg = Some((msg, Instant::now())),
+                                }
+                                kill_dialog = KillDialogState::Closed;
+                                let r = refresh();
+                                trees = r.0;
+                                tmux_servers = r.1;
+                            }
+                            _ => {
+                                kill_dialog = KillDialogState::Closed;
+                                status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Zombie dialog mode — capture keys here first
+                    if zombie_dialog.is_some() {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                let result = kill_zombies();
+                                let msg = if result.total() == 0 {
+                                    "No zombies killed (already gone?)".to_string()
+                                } else {
+                                    let mut parts = Vec::new();
+                                    if result.teams_cleaned > 0 {
+                                        parts.push(format!("{} team(s)", result.teams_cleaned));
+                                    }
+                                    if result.tmux_cleaned > 0 {
+                                        parts.push(format!("{} tmux", result.tmux_cleaned));
+                                    }
+                                    if !result.errors.is_empty() {
+                                        parts.push(format!("{} error(s)", result.errors.len()));
+                                    }
+                                    format!("Killed: {}", parts.join(", "))
+                                };
+                                status_msg = Some((msg, Instant::now()));
+                                zombie_dialog = None;
+                                let r = refresh();
+                                trees = r.0;
+                                tmux_servers = r.1;
+                            }
+                            _ => {
+                                // Any other key cancels
+                                zombie_dialog = None;
+                                status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
+                            }
+                        }
+                        continue;
+                    }
+
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
-                        KeyCode::Char('r') => { let r = refresh(); trees = r.0; tmux_servers = r.1; },
+                        KeyCode::Char('r') => {
+                            let r = refresh();
+                            trees = r.0;
+                            tmux_servers = r.1;
+                        },
+                        KeyCode::Char('k') => {
+                            let zombies = scan_zombies();
+                            if zombies.is_empty() {
+                                status_msg = Some(("No zombies found. All clean.".to_string(), Instant::now()));
+                            } else {
+                                zombie_dialog = Some(zombies);
+                            }
+                        },
+                        KeyCode::Char('d') => {
+                            let entries = build_killable_list(&trees, &tmux_servers);
+                            if entries.is_empty() {
+                                status_msg = Some(("No killable processes.".to_string(), Instant::now()));
+                            } else {
+                                kill_dialog = KillDialogState::Selecting { entries, selected: 0 };
+                            }
+                        },
                         _ => {}
                     }
                 }
@@ -40,10 +155,13 @@ fn main() -> Result<()> {
         }
 
         if last_tick.elapsed() >= tick_rate {
-            let r = refresh();
-            trees = r.0;
-            tmux_servers = r.1;
-            last_tick = Instant::now();
+            // Don't auto-refresh while any dialog is open
+            if zombie_dialog.is_none() && matches!(kill_dialog, KillDialogState::Closed) {
+                let r = refresh();
+                trees = r.0;
+                tmux_servers = r.1;
+                last_tick = Instant::now();
+            }
         }
     }
 
@@ -84,7 +202,7 @@ fn format_uptime(start_time: u64) -> String {
     }
 }
 
-fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
+fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>) {
     let area = frame.area();
     let sys = System::new_all();
 
@@ -413,8 +531,346 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
 
     // Footer
     let footer_idx = if has_tmux { 3 } else { 2 };
-    let footer = Paragraph::new(" q: quit | r: refresh | auto-refresh: 2s")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM))
+    let footer_text = if let Some(msg) = status_msg {
+        format!(" {} | q: quit | r: refresh | k: kill zombies", msg)
+    } else {
+        " q: quit | r: refresh | k: kill zombies | d: kill PID | auto-refresh: 2s".to_string()
+    };
+    let footer_style = if status_msg.is_some() {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+    };
+    let footer = Paragraph::new(footer_text)
+        .style(footer_style)
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[footer_idx]);
+}
+
+/// Draw a centered confirmation dialog listing zombie entries.
+fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
+    use ratatui::widgets::{Clear, Wrap};
+
+    let area = frame.area();
+
+    // Size the dialog based on content
+    let content_height = (zombies.len() as u16 * 2 + 6).min(area.height.saturating_sub(4));
+    let dialog_width = 64.min(area.width.saturating_sub(4));
+    let dialog = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(content_height),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    let dialog_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(dialog_width),
+            Constraint::Fill(1),
+        ])
+        .split(dialog[1])[1];
+
+    // Clear the area behind the dialog
+    frame.render_widget(Clear, dialog_area);
+
+    // Build content
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" Found {} zombie(s):", zombies.len()),
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    for (i, zombie) in zombies.iter().enumerate() {
+        let (icon, label, detail) = match zombie {
+            ZombieEntry::Team { name, member_count, task_count, config_dir } => {
+                let config_label = config_dir.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                (
+                    "✗",
+                    format!("{}. TEAM: {}", i + 1, name),
+                    format!("   {} members, {} tasks [{}] — owner dead", member_count, task_count, config_label),
+                )
+            }
+            ZombieEntry::OrphanTmux { socket_name, lead_pid, pane_count, server_pid } => {
+                let pid_str = server_pid.map(|p| format!(" PID:{}", p)).unwrap_or_default();
+                (
+                    "✗",
+                    format!("{}. TMUX: {}", i + 1, socket_name),
+                    format!("   lead:{} {} panes{} — lead dead", lead_pid, pane_count, pid_str),
+                )
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", icon), Style::default().fg(Color::Red)),
+            Span::styled(label, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            detail,
+            Style::default().fg(Color::Gray),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(": kill all  ", Style::default().fg(Color::White)),
+        Span::styled("any other key", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(": cancel", Style::default().fg(Color::White)),
+    ]));
+
+    let dialog_widget = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title(" Kill Zombies? ")
+                .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        )
+        .style(Style::default().bg(Color::Black));
+
+    frame.render_widget(dialog_widget, dialog_area);
+}
+
+// ── Kill-by-PID Dialog ──────────────────────────────────────────
+
+/// A killable process entry from the current monitor view.
+#[derive(Debug, Clone)]
+struct KillableEntry {
+    pid: u32,
+    label: String,    // e.g. "SESSION [2.1.74] [.claude-true]", "MCP:echo-search"
+    detail: String,   // e.g. "melina (main *) 291.3MB"
+    status: String,   // e.g. "working", "ACTIVE", "IDLE"
+    uptime: String,   // e.g. "8h58m", "37m"
+}
+
+/// State machine for the kill-by-PID dialog.
+enum KillDialogState {
+    Closed,
+    Selecting { entries: Vec<KillableEntry>, selected: usize },
+    Confirm { entry: KillableEntry },
+}
+
+impl KillDialogState {
+    fn move_selection(&mut self, count: usize, delta: isize) {
+        if let KillDialogState::Selecting { selected, .. } = self {
+            if count == 0 { return; }
+            let new = (*selected as isize + delta).rem_euclid(count as isize) as usize;
+            *selected = new;
+        }
+    }
+}
+
+/// Build a list of all killable processes from the current monitor state.
+fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Vec<KillableEntry> {
+    let mut entries = Vec::new();
+
+    // Sessions and their children
+    for tree in trees {
+        let cwd_short = tree.working_dir.as_deref()
+            .and_then(|p| p.rsplit('/').next())
+            .unwrap_or("");
+        let git = tree.git_context.as_ref()
+            .map(|g| format!(" ({})", g.display()))
+            .unwrap_or_default();
+        let mem = format!("{:.1}MB", tree.total_memory_bytes as f64 / 1_048_576.0);
+
+        let ver = tree.claude_version.as_deref().unwrap_or("?");
+        let config = tree.config_label();
+        let uptime = format_uptime(tree.root.start_time);
+
+        entries.push(KillableEntry {
+            pid: tree.root.pid,
+            label: format!("SESSION [{}] [{}]", ver, config),
+            detail: format!("{}{} {}", cwd_short, git, mem),
+            status: tree.claude_status.label().to_string(),
+            uptime,
+        });
+
+        for child in &tree.children {
+            let kind = match &child.kind {
+                ChildKind::McpServer { server_name } => format!("MCP:{}", server_name),
+                ChildKind::Teammate { name } => format!("MATE:{}", name.as_deref().unwrap_or("?")),
+                ChildKind::HookScript => "HOOK".to_string(),
+                ChildKind::BashTool => "BASH".to_string(),
+                ChildKind::Unknown => "???".to_string(),
+            };
+            let mem = format!("{:.1}MB", child.info.memory_bytes as f64 / 1_048_576.0);
+            entries.push(KillableEntry {
+                pid: child.info.pid,
+                label: kind,
+                detail: format!("{} {}", child.info.name, mem),
+                status: child.health.label().to_string(),
+                uptime: format_uptime(child.info.start_time),
+            });
+        }
+    }
+
+    // Tmux swarm servers + individual panes
+    for srv in tmux_servers {
+        // Server entry (kills entire swarm)
+        if let Some(server_pid) = srv.server_pid {
+            let status = if srv.lead_alive { "ACTIVE" } else { "ORPHAN" };
+            entries.push(KillableEntry {
+                pid: server_pid,
+                label: format!("SWARM:{}", srv.socket_name),
+                detail: format!("lead:{} {} panes {:.1}KB", srv.lead_pid, srv.panes.len(), srv.memory_bytes as f64 / 1024.0),
+                status: status.to_string(),
+                uptime: String::new(),
+            });
+        }
+
+        // Individual panes with claude processes
+        for pane in &srv.panes {
+            if let Some(claude_pid) = pane.claude_pid {
+                let agent = pane.agent_name.as_deref().unwrap_or("shell");
+                let mem = if pane.memory_bytes > 0 {
+                    format!("{:.1}MB", pane.memory_bytes as f64 / 1_048_576.0)
+                } else {
+                    String::new()
+                };
+                let team = pane.team_name.as_deref().unwrap_or("");
+                entries.push(KillableEntry {
+                    pid: claude_pid,
+                    label: format!("  PANE:{}", agent),
+                    detail: format!("pane:{} {} {}", pane.pane_id, team, mem),
+                    status: pane.status.label().to_string(),
+                    uptime: String::new(),
+                });
+            }
+        }
+    }
+
+    entries
+}
+
+/// Draw the kill-by-PID selection or confirmation dialog.
+fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
+    use ratatui::widgets::{Cell, Clear, Table, TableState, Wrap};
+
+    match state {
+        KillDialogState::Closed => {}
+        KillDialogState::Selecting { entries, selected } => {
+            let area = frame.area();
+            // Use 90% of terminal width and up to 80% height (+2 for border, +1 for header)
+            let dialog_width = (area.width * 9 / 10).max(60);
+            let list_height = (entries.len() as u16 + 4).min(area.height * 4 / 5);
+            let dialog_area = centered_rect(dialog_width, list_height, area);
+
+            frame.render_widget(Clear, dialog_area);
+
+            let hdr_style = Style::default().fg(Color::Rgb(88, 110, 117)).add_modifier(Modifier::BOLD);
+            let header = Row::new(vec![
+                Cell::from("PID").style(hdr_style),
+                Cell::from("KIND").style(hdr_style),
+                Cell::from("STATUS").style(hdr_style),
+                Cell::from("UPTIME").style(hdr_style),
+                Cell::from("DETAIL").style(hdr_style),
+            ]);
+
+            let rows: Vec<Row> = entries.iter().enumerate().map(|(i, e)| {
+                let marker = if i == *selected { "> " } else { "  " };
+                Row::new(vec![
+                    Cell::from(format!("{}{}", marker, e.pid))
+                        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                    Cell::from(e.label.as_str())
+                        .style(Style::default().fg(Color::Cyan)),
+                    Cell::from(e.status.as_str())
+                        .style(Style::default().fg(Color::Green)),
+                    Cell::from(e.uptime.as_str())
+                        .style(Style::default().fg(Color::Yellow)),
+                    Cell::from(e.detail.as_str())
+                        .style(Style::default().fg(Color::Gray)),
+                ])
+            }).collect();
+
+            let widths = [
+                Constraint::Length(12),
+                Constraint::Length(34),
+                Constraint::Length(10),
+                Constraint::Length(8),
+                Constraint::Fill(1),
+            ];
+
+            let table = Table::new(rows, widths)
+                .header(header)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .title(" Kill Process (↑↓ select, Enter confirm, Esc cancel) ")
+                        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                )
+                .row_highlight_style(Style::default().bg(Color::DarkGray))
+                .style(Style::default().bg(Color::Black));
+
+            let mut table_state = TableState::default();
+            table_state.select(Some(*selected));
+            frame.render_stateful_widget(table, dialog_area, &mut table_state);
+        }
+        KillDialogState::Confirm { entry } => {
+            let area = frame.area();
+            let dialog_area = centered_rect(60, 8, area);
+
+            frame.render_widget(Clear, dialog_area);
+
+            let lines = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(" Kill ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("PID:{}", entry.pid), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" ({})?", entry.label), Style::default().fg(Color::Cyan)),
+                ]),
+                Line::from(Span::styled(
+                    format!(" {} — {}", entry.status, entry.detail),
+                    Style::default().fg(Color::Gray),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled(" y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(": kill  ", Style::default().fg(Color::White)),
+                    Span::styled("any other key", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled(": cancel", Style::default().fg(Color::White)),
+                ]),
+            ];
+
+            let widget = Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Red))
+                        .title(" Confirm Kill ")
+                        .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                )
+                .style(Style::default().bg(Color::Black));
+
+            frame.render_widget(widget, dialog_area);
+        }
+    }
+}
+
+/// Create a centered rect of given width and height within `area`.
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(height),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(width),
+            Constraint::Fill(1),
+        ])
+        .split(v[1])[1]
 }
