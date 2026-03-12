@@ -363,11 +363,14 @@ fn detect_config_dir(_root: &ProcessInfo, children: &[ChildProcess]) -> Option<P
     for child in children {
         let cmd = child.info.cmd.join(" ");
         if let Some(pos) = cmd.find("/.claude") {
-            // Verify this is actually .claude directory, not .claude-backup etc.
+            // Verify this is actually a .claude directory (not .claude-backup etc.)
+            // Valid patterns: /.claude/, /.claude-{name}/, or /.claude at end
             let after = &cmd[pos + 8..]; // after "/.claude" (8 chars)
-            let is_valid = after.is_empty() || after.starts_with('/');
+            let is_valid = after.is_empty()
+                || after.starts_with('/')
+                || (after.starts_with('-') && after[1..].contains('/'));
             if !is_valid {
-                continue; // Skip false positives like .claude-backup
+                continue; // Skip false positives like .claude-backup without slash
             }
             // Find the start of the path (look backwards for space or start of string)
             let path_start = cmd[..pos].rfind(' ').map(|s| s + 1).unwrap_or(0);
