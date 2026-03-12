@@ -386,6 +386,8 @@ pub fn scan_tmux_servers() -> Vec<TmuxServer> {
 
     let mut sys = System::new_all();
     sys.refresh_all();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_all();
 
     // Find tmux server processes: `tmux -L claude-swarm-NNNNN ...`
     let ps_output = Command::new("ps")
