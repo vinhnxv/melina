@@ -375,7 +375,7 @@ impl TmuxServer {
         !self.lead_alive
     }
 
-    pub fn status_label(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         if self.lead_alive { "ACTIVE" } else { "ORPHAN" }
     }
 }
@@ -779,7 +779,16 @@ fn extract_arg(cmd: &[String], flag: &str) -> Option<String> {
 }
 
 /// Kill an orphan tmux server by socket name.
+/// Validates socket format to prevent command injection.
 pub fn kill_tmux_server(socket: &str) -> bool {
+    // Validate socket name format: claude-swarm-{digits}
+    if !socket.starts_with("claude-swarm-") {
+        return false;
+    }
+    let suffix = &socket["claude-swarm-".len()..];
+    if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
     use std::process::Command;
     Command::new("tmux")
         .args(["-L", socket, "kill-server"])

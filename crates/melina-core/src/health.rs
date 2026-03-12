@@ -131,7 +131,7 @@ pub fn check_team_health(team: &TeamInfo, sys: &System) -> TeamHealthReport {
         let health = if !owner_alive {
             TeammateHealth::Zombie
         } else {
-            assess_teammate(m, team, now)
+            check_teammate_health(m, team, now)
         };
 
         let last_activity_secs = get_inbox_age(team, &m.name, now);
@@ -166,8 +166,8 @@ fn check_team_owner_alive(team: &TeamInfo, sys: &System) -> bool {
     false
 }
 
-/// Assess individual teammate health from inbox + task signals.
-fn assess_teammate(member: &TeamMember, team: &TeamInfo, now: u64) -> TeammateHealth {
+/// Check individual teammate health from inbox + task signals.
+fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> TeammateHealth {
     let inbox_age = get_inbox_age(team, &member.name, now);
 
     // Check if teammate has completed tasks
@@ -175,12 +175,6 @@ fn assess_teammate(member: &TeamMember, team: &TeamInfo, now: u64) -> TeammateHe
 
     // If teammate has completed tasks and no stuck ones, it's done
     if completed_count > 0 && stuck_tasks.is_empty() {
-        // But check if inbox is very stale too (finished and idle)
-        if let Some(age) = inbox_age {
-            if age > TEAMMATE_STALE_SECS {
-                return TeammateHealth::Completed;
-            }
-        }
         return TeammateHealth::Completed;
     }
 
@@ -259,7 +253,7 @@ fn is_pid_alive(pid: u32, sys: &System) -> bool {
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_else(|_| std::time::Duration::ZERO)
         .as_secs()
 }
 

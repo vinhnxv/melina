@@ -23,7 +23,11 @@ pub fn classify_child(proc: &ProcessInfo) -> ChildKind {
     let cmd_str = proc.cmd.join(" ");
 
     // MCP servers — Python or Node scripts under plugin cache
-    if cmd_str.contains("server.py") || cmd_str.contains("mcp") {
+    if cmd_str.contains("server.py")
+        || cmd_str.contains("/mcp/")
+        || cmd_str.contains("mcp-server")
+        || cmd_str.contains("mcp_server")
+    {
         let server_name = extract_mcp_name(&cmd_str);
         return ChildKind::McpServer { server_name };
     }
