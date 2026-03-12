@@ -1,0 +1,20 @@
+[package]
+name = "melina-tui"
+version.workspace = true
+edition.workspace = true
+description = "Terminal UI — live dashboard with ratatui"
+
+[[bin]]
+name = "melina-tui"
+path = "src/main.rs"
+
+[dependencies]
+melina-core.workspace = true
+chrono.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sysinfo.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "melina-core"
+version.workspace = true
+edition.workspace = true
+description = "Core library — process discovery, tree building, session classification"
+
+[dependencies]
+sysinfo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+tracing.workspace = true
