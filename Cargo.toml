@@ -8,7 +8,7 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2026"
+edition = "2024"
 authors = ["vinhnxv"]
 license = "MIT"
 description = "Claude Code process monitor — track sessions, teammates, MCP servers, and orphans"
