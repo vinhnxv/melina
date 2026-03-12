@@ -1,6 +1,8 @@
 //! Tree building — assemble flat process list into session trees.
 
 use crate::{ProcessInfo, ChildKind, Health, classify_child, check_health};
+use crate::git::GitContext;
+use crate::status::{ClaudeSessionStatus, detect_pane_status};
 use crate::teams::{TeamInfo, scan_teams, resolve_tmux_pids};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -56,6 +58,10 @@ pub struct SessionTree {
     pub claude_version: Option<String>,
     /// Host tmux session this Claude process is running inside (user's tmux, not claude-swarm).
     pub host_tmux: Option<HostTmux>,
+    /// Claude Code session status detected from tmux pane content.
+    pub claude_status: ClaudeSessionStatus,
+    /// Git context for the working directory (branch, dirty state, etc.).
+    pub git_context: Option<GitContext>,
 }
 
 impl SessionTree {
@@ -265,6 +271,27 @@ pub fn build_trees(processes: Vec<ProcessInfo>) -> Vec<SessionTree> {
         // Detect if running inside a user tmux session
         let host_tmux = detect_host_tmux(root, &tmux_panes, &sys);
 
+        // Detect Claude session status: prefer tmux pane content, fallback to CPU
+        let claude_status = if let Some(ref tmux) = host_tmux {
+            detect_pane_status(&tmux.pane_id)
+        } else {
+            // No tmux pane — fallback to CPU-based heuristic
+            let total_cpu: f32 = root.cpu_percent
+                + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            if total_cpu > 0.5 {
+                ClaudeSessionStatus::Working
+            } else {
+                ClaudeSessionStatus::Idle
+            }
+        };
+
+        // Detect git context from working directory
+        let git_context = if !root.cwd.as_os_str().is_empty() {
+            GitContext::detect(&root.cwd)
+        } else {
+            None
+        };
+
         trees.push(SessionTree {
             root: root.clone(),
             root_health,
@@ -277,6 +304,8 @@ pub fn build_trees(processes: Vec<ProcessInfo>) -> Vec<SessionTree> {
             working_dir,
             claude_version,
             host_tmux,
+            claude_status,
+            git_context,
         });
     }
 

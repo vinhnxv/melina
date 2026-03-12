@@ -105,14 +105,22 @@ fn render(cli: &Cli) -> Result<()> {
         let cpu: f32 = tree.root.cpu_percent
             + tree.children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
         let ver = tree.claude_version.as_deref().unwrap_or("?");
-        println!("║  Session {} [PID {}] {:<20} {:>8}  ║",
-            i + 1, tree.root.pid, config, mem);
+        let status_display = format!("{} {}", tree.claude_status.colored_symbol(), tree.claude_status.label());
+        println!("║  {} Session {} [PID {}] {:<16} {:>8}  ║",
+            tree.claude_status.colored_symbol(), i + 1, tree.root.pid, config, mem);
         println!("║    version: {:<47} ║", ver);
+        println!("║    status:  {:<47} ║", status_display);
         println!("║    started: {:<47} ║", started);
         println!("║    uptime:  {:<47} ║",
             format!("{}  CPU: {:.1}%  {}", uptime, cpu, flags));
         if let Some(ref cwd) = tree.working_dir {
-            println!("║    cwd:     {:<47} ║", truncate_path(cwd, 47));
+            let git_info = tree.git_context.as_ref()
+                .map(|g| format!(" ({})", g.display()))
+                .unwrap_or_default();
+            println!("║    cwd:     {:<47} ║", truncate_path(cwd, 47 - git_info.len().min(20)));
+            if !git_info.is_empty() {
+                println!("║    git:     {:<47} ║", tree.git_context.as_ref().unwrap().display());
+            }
         }
         if let Some(ref sid) = tree.session_id {
             println!("║    session: {:<47} ║", sid);

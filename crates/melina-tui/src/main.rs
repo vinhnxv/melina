@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees, check_team_health, resolve_tmux_pids, scan_tmux_servers, ChildKind, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees, check_team_health, resolve_tmux_pids, scan_tmux_servers, ChildKind, ClaudeSessionStatus, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -139,33 +139,43 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
             .map(|s| s.chars().take(8).collect())
             .unwrap_or_default();
         let tmux_label = tree.host_tmux.as_ref()
-            .map(|t| format!("{} [{}]", t, t.server_pid))
+            .map(|t| format!("[{}] {}", t.server_pid, t))
+            .unwrap_or_default();
+        let git_label = tree.git_context.as_ref()
+            .map(|g| format!(" ({})", g.display()))
             .unwrap_or_default();
         let info = if !sid_short.is_empty() {
-            format!("{} MCP, {} mates | {} [{}…]",
-                tree.mcp_count(), tree.teammate_count(), cwd_short, sid_short)
+            format!("{} MCP, {} mates | {}{} [{}…]",
+                tree.mcp_count(), tree.teammate_count(), cwd_short, git_label, sid_short)
         } else if !cwd_short.is_empty() {
-            format!("{} MCP, {} mates | {}",
-                tree.mcp_count(), tree.teammate_count(), cwd_short)
+            format!("{} MCP, {} mates | {}{}",
+                tree.mcp_count(), tree.teammate_count(), cwd_short, git_label)
         } else {
             format!("{} MCP, {} mates", tree.mcp_count(), tree.teammate_count())
         };
 
         let ver = tree.claude_version.as_deref().unwrap_or("?");
-        let kind_str = format!("SESSION [{}]", ver);
+        let config = tree.config_label();
+        let kind_str = format!("SESSION [{}] [{}]", ver, config);
+        let status_str = format!("{} {}", tree.claude_status.symbol(), tree.claude_status.label());
+        let session_style = match tree.claude_status {
+            ClaudeSessionStatus::Working => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Idle => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::WaitingInput => Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Unknown => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        };
         rows.push(Row::new(vec![
             format!("S{}", i + 1),
             format!("{}", tree.root.pid),
             kind_str,
-            tree.config_label(),
             format!("{:.1}%", cpu),
             format!("{:.1}MB", tree.total_memory_bytes as f64 / 1_048_576.0),
             started,
             uptime,
-            String::new(), // HEALTH
-            tmux_label,
+            status_str,
             info,
-        ]).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            tmux_label,
+        ]).style(session_style));
 
         // Teams & teammates (from config.json) with health
         for team in &tree.teams {
@@ -187,10 +197,9 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
                 String::new(),
                 String::new(),
                 String::new(),
-                String::new(),
-                String::new(), // HEALTH
-                String::new(), // TMUX
+                String::new(), // STATUS
                 format!("{} mates, {} tasks{}", mates.len(), team.task_count, team_status),
+                String::new(), // TMUX
             ]).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
 
             for entry in &report.members {
@@ -225,14 +234,13 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
                     "    ".to_string(),
                     pid_str,
                     format!("MATE:{}", entry.name),
-                    String::new(),
                     cpu_str,
                     mem_str,
                     started,
                     uptime,
                     health_str,
-                    String::new(), // TMUX
                     format!("{}", entry.agent_type),
+                    String::new(), // TMUX
                 ]).style(style));
             }
         }
@@ -258,14 +266,13 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
                 "  └─".to_string(),
                 format!("{}", child.info.pid),
                 kind_str,
-                String::new(),
                 format!("{:.1}%", child.info.cpu_percent),
                 format!("{:.1}MB", child.info.memory_bytes as f64 / 1_048_576.0),
                 child_started,
                 child_uptime,
-                String::new(), // HEALTH
-                String::new(), // TMUX
+                String::new(), // STATUS
                 child.info.name.clone(),
+                String::new(), // TMUX
             ]).style(style));
         }
     }
@@ -275,19 +282,18 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
         [
             Constraint::Length(6),   // #
             Constraint::Length(8),   // PID
-            Constraint::Length(26),  // KIND (includes version)
-            Constraint::Length(14),  // CONFIG
+            Constraint::Length(38),  // KIND (includes version + config)
             Constraint::Length(8),   // CPU
             Constraint::Length(10),  // MEM
             Constraint::Length(20),  // STARTED
             Constraint::Length(8),   // UPTIME
-            Constraint::Length(12),  // HEALTH
-            Constraint::Length(30),  // TMUX
+            Constraint::Length(12),  // STATUS
             Constraint::Fill(1),    // INFO
+            Constraint::Length(30),  // TMUX
         ],
     )
     .header(
-        Row::new(vec!["#", "PID", "KIND", "CONFIG", "CPU", "MEM", "STARTED", "UPTIME", "HEALTH", "TMUX", "INFO"])
+        Row::new(vec!["#", "PID", "KIND", "CPU", "MEM", "STARTED", "UPTIME", "STATUS", "INFO", "TMUX"])
             .style(Style::default().add_modifier(Modifier::BOLD))
             .bottom_margin(1),
     )
