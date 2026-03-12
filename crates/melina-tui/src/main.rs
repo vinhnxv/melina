@@ -316,7 +316,7 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer]) {
                 srv.socket_name.clone(),
                 pid_str,
                 format!("{}", srv.lead_pid),
-                srv.status_label().to_string(),
+                srv.label().to_string(),
                 format!("{}", srv.panes.len()),
                 mem_str,
                 started,
