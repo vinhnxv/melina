@@ -417,7 +417,7 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
                         0
                     };
 
-                    if uptime >= IDLE_SHELL_UPTIME_MIN_SECS && pane.start_time > 0 {
+                    if uptime >= IDLE_SHELL_UPTIME_MIN_SECS {
                         // Idle shell: claude exited, shell has been running 8+ min
                         entries.push(ZombieEntry::IdleShell {
                             socket_name: srv.socket_name.clone(),
@@ -559,28 +559,40 @@ pub fn kill_zombies_with(sys: &System) -> KillZombiesResult {
                     let is_orphan = pane.agent_name.is_none() && !is_idle;
 
                     if is_idle || is_orphan {
-                        let digits = &pane.pane_id[1..];
-                        if pane.pane_id.starts_with('%')
-                            && !digits.is_empty()
-                            && digits.chars().all(|c| c.is_ascii_digit())
-                        {
-                            let kill_result = std::process::Command::new("tmux")
-                                .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
-                                .output();
-                            if kill_result.is_ok_and(|o| o.status.success()) {
-                                if is_idle {
-                                    result.idle_shells_cleaned += 1;
+                        // Guard before slicing to prevent panic on empty pane_id
+                        if pane.pane_id.starts_with('%') && pane.pane_id.len() > 1 {
+                            let digits = &pane.pane_id[1..];
+                            if digits.chars().all(|c| c.is_ascii_digit()) {
+                                let kill_result = std::process::Command::new("tmux")
+                                    .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
+                                    .output();
+                                if kill_result.is_ok_and(|o| o.status.success()) {
+                                    if is_idle {
+                                        result.idle_shells_cleaned += 1;
+                                    } else {
+                                        result.shells_cleaned += 1;
+                                    }
                                 } else {
-                                    result.shells_cleaned += 1;
+                                    result.errors.push(format!(
+                                        "failed to kill {} pane {} in {}",
+                                        if is_idle { "idle" } else { "orphan" },
+                                        pane.pane_id,
+                                        srv.socket_name
+                                    ));
                                 }
                             } else {
                                 result.errors.push(format!(
-                                    "failed to kill {} pane {} in {}",
+                                    "skipped {} pane with invalid id {:?} in {}",
                                     if is_idle { "idle" } else { "orphan" },
-                                    pane.pane_id,
-                                    srv.socket_name
+                                    pane.pane_id, srv.socket_name
                                 ));
                             }
+                        } else {
+                            result.errors.push(format!(
+                                "skipped {} pane with invalid id {:?} in {}",
+                                if is_idle { "idle" } else { "orphan" },
+                                pane.pane_id, srv.socket_name
+                            ));
                         }
                     }
                 }
@@ -815,13 +827,15 @@ pub fn format_cleanup_result(result: &KillZombiesResult) -> String {
     if result.idle_shells_cleaned > 0 {
         parts.push(format!("{} idle shell(s)", result.idle_shells_cleaned));
     }
-    if !result.errors.is_empty() {
-        parts.push(format!("{} error(s)", result.errors.len()));
-    }
     if parts.is_empty() {
         "No zombies found".to_string()
     } else {
-        format!("Cleaned: {}", parts.join(", "))
+        let cleaned = format!("Cleaned: {}", parts.join(", "));
+        if result.errors.is_empty() {
+            cleaned
+        } else {
+            format!("{} ({} error(s))", cleaned, result.errors.len())
+        }
     }
 }
 
@@ -1162,7 +1176,7 @@ mod tests {
         };
         assert_eq!(
             format_cleanup_result(&result),
-            "Cleaned: 1 team(s), 2 tmux, 3 idle shell(s), 1 error(s)"
+            "Cleaned: 1 team(s), 2 tmux, 3 idle shell(s) (1 error(s))"
         );
     }
 

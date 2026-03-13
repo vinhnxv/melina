@@ -104,7 +104,7 @@ fn main() -> Result<()> {
                                 let msg = if result.total() == 0 {
                                     "No zombies killed (already gone?)".to_string()
                                 } else {
-                                    format!("Killed: {}", format_cleanup_result(&result).trim_start_matches("Cleaned: "))
+                                    format_cleanup_result(&result)
                                 };
                                 status_msg = Some((msg, Instant::now()));
                                 zombie_dialog = None;

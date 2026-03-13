@@ -48,6 +48,10 @@ fn main() -> Result<()> {
         return kill_zombies();
     }
 
+    if cli.auto_cleanup && cli.watch.is_none() {
+        eprintln!("Warning: --auto-cleanup has no effect without --watch");
+    }
+
     if let Some(interval) = cli.watch {
         let mut sys = create_process_system();
         let mut auto_cleanup = AutoCleanup::new();
