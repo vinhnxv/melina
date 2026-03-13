@@ -3,7 +3,7 @@
 use crate::{ProcessInfo, ChildKind, Health, classify_child, check_health};
 use crate::git::GitContext;
 use crate::status::{ClaudeSessionStatus, detect_pane_status};
-use crate::teams::{TeamInfo, scan_teams, resolve_tmux_pids};
+use crate::teams::{TeamInfo, ConfigDirCache, TmuxSnapshot, scan_teams_cached, resolve_tmux_pids};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -215,6 +215,19 @@ fn detect_host_tmux(
 /// When `skip_status` is true, skips expensive capture-pane/jsonl status detection
 /// and sets `claude_status` to `Unknown` (caller should merge from cache).
 pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool) -> Vec<SessionTree> {
+    let snapshot = TmuxSnapshot::new();
+    let cache = ConfigDirCache::new();
+    build_trees_with_context(processes, sys, skip_status, &cache, &snapshot)
+}
+
+/// Build session trees using pre-built cache and snapshot (avoids duplicate ps/config dir calls).
+pub fn build_trees_with_context(
+    processes: Vec<ProcessInfo>,
+    sys: &System,
+    skip_status: bool,
+    cache: &ConfigDirCache,
+    snapshot: &TmuxSnapshot,
+) -> Vec<SessionTree> {
     let by_pid: HashMap<u32, &ProcessInfo> = processes.iter().map(|p| (p.pid, p)).collect();
 
     // Query host tmux panes once for all sessions
@@ -231,9 +244,9 @@ pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool)
         })
         .collect();
 
-    // Read all teams once and resolve tmux PIDs
-    let mut all_teams = scan_teams();
-    resolve_tmux_pids(&mut all_teams, sys);
+    // Read all teams once and resolve tmux PIDs (using cached config dirs + shared snapshot)
+    let mut all_teams = scan_teams_cached(cache);
+    resolve_tmux_pids(&mut all_teams, sys, snapshot);
 
     let mut trees = Vec::new();
 
