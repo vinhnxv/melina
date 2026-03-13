@@ -2,7 +2,7 @@
 
 use crate::ProcessInfo;
 use crate::discovery::create_process_system;
-use crate::teams::{TeamInfo, TeamMember};
+use crate::teams::{PaneStatus, TeamInfo, TeamMember};
 use serde::Serialize;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -300,6 +300,45 @@ pub enum ZombieEntry {
         shell_pid: u32,
         uptime_secs: u64,
     },
+    /// A stale tmux pane whose team was deleted or whose work is done.
+    /// Claude process may still be alive but the pane is no longer useful.
+    StalePane {
+        socket_name: String,
+        pane_id: String,
+        shell_pid: u32,
+        claude_pid: Option<u32>,
+        agent_name: String,
+        reason: StalePaneReason,
+    },
+}
+
+/// Why a tmux pane is considered stale.
+#[derive(Debug, Clone)]
+pub enum StalePaneReason {
+    /// Team dir deleted + teammate finished (DONE status).
+    TeamDeletedDone,
+    /// Team dir deleted + teammate idle (no work to do).
+    TeamDeletedIdle,
+    /// Team dir deleted + teammate still active (may be finishing up).
+    TeamDeletedActive,
+    /// Team exists but teammate finished and idle > threshold.
+    DoneStale { uptime_secs: u64 },
+}
+
+impl StalePaneReason {
+    pub fn label(&self) -> &'static str {
+        match self {
+            StalePaneReason::TeamDeletedDone => "team deleted, work done",
+            StalePaneReason::TeamDeletedIdle => "team deleted, idle",
+            StalePaneReason::TeamDeletedActive => "team deleted, still active",
+            StalePaneReason::DoneStale { .. } => "work done, pane lingering",
+        }
+    }
+
+    /// Whether this is safe to auto-kill without confirmation.
+    pub fn is_safe_to_kill(&self) -> bool {
+        matches!(self, StalePaneReason::TeamDeletedDone | StalePaneReason::TeamDeletedIdle | StalePaneReason::DoneStale { .. })
+    }
 }
 
 impl ZombieEntry {
@@ -349,6 +388,18 @@ impl ZombieEntry {
                     pane_id, shell_pid, uptime_secs / 60, socket_name
                 )
             }
+            ZombieEntry::StalePane {
+                socket_name,
+                pane_id,
+                agent_name,
+                reason,
+                ..
+            } => {
+                format!(
+                    "STALE PANE: {} pane {} ({}) in {}",
+                    agent_name, pane_id, reason.label(), socket_name
+                )
+            }
         }
     }
 
@@ -359,6 +410,7 @@ impl ZombieEntry {
             ZombieEntry::OrphanTmux { .. } => "lead process is dead",
             ZombieEntry::OrphanShell { .. } => "claude process exited, empty shell remains",
             ZombieEntry::IdleShell { .. } => "claude process exited, shell idle too long",
+            ZombieEntry::StalePane { reason, .. } => reason.label(),
         }
     }
 }
@@ -403,19 +455,17 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
                 server_pid: srv.server_pid,
             });
         } else {
-            // Active server — check for orphan and idle shell panes
+            // Active server — check for orphan, idle, and stale panes
             for pane in &srv.panes {
-                if !pane.claude_alive {
-                    // Check uptime for idle shell detection
-                    // Guard: skip if start_time is 0 (unknown)
-                    let uptime = if pane.start_time > 0 {
-                        now.saturating_sub(pane.start_time)
-                    } else {
-                        0
-                    };
+                let uptime = if pane.start_time > 0 {
+                    now.saturating_sub(pane.start_time)
+                } else {
+                    0
+                };
 
+                if !pane.claude_alive {
+                    // Claude process exited — check for idle/orphan shells
                     if uptime >= IDLE_SHELL_UPTIME_MIN_SECS {
-                        // Idle shell: claude exited, shell has been running 8+ min
                         entries.push(ZombieEntry::IdleShell {
                             socket_name: srv.socket_name.clone(),
                             pane_id: pane.pane_id.clone(),
@@ -423,11 +473,39 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
                             uptime_secs: uptime,
                         });
                     } else if pane.agent_name.is_none() {
-                        // Short-lived orphan shell (no agent, under threshold)
                         entries.push(ZombieEntry::OrphanShell {
                             socket_name: srv.socket_name.clone(),
                             pane_id: pane.pane_id.clone(),
                             shell_pid: pane.shell_pid,
+                        });
+                    }
+                }
+
+                // Stale pane detection: team deleted or work done but pane lingers
+                if let Some(agent) = &pane.agent_name {
+                    let reason = if !pane.team_exists {
+                        // Team dir was deleted — classify by pane status
+                        match pane.status {
+                            PaneStatus::Done => Some(StalePaneReason::TeamDeletedDone),
+                            PaneStatus::Idle => Some(StalePaneReason::TeamDeletedIdle),
+                            PaneStatus::Active => Some(StalePaneReason::TeamDeletedActive),
+                            PaneStatus::Shell => None, // already caught above
+                        }
+                    } else if pane.status == PaneStatus::Done && uptime >= IDLE_SHELL_UPTIME_MIN_SECS {
+                        // Team exists but teammate finished and pane lingers
+                        Some(StalePaneReason::DoneStale { uptime_secs: uptime })
+                    } else {
+                        None
+                    };
+
+                    if let Some(reason) = reason {
+                        entries.push(ZombieEntry::StalePane {
+                            socket_name: srv.socket_name.clone(),
+                            pane_id: pane.pane_id.clone(),
+                            shell_pid: pane.shell_pid,
+                            claude_pid: pane.claude_pid,
+                            agent_name: agent.clone(),
+                            reason,
                         });
                     }
                 }
@@ -449,13 +527,16 @@ pub struct KillZombiesResult {
     pub shells_cleaned: usize,
     /// Number of idle shell panes killed.
     pub idle_shells_cleaned: usize,
+    /// Number of stale teammate panes killed (team deleted or done+lingering).
+    pub stale_panes_cleaned: usize,
     /// Error messages from failed operations.
     pub errors: Vec<String>,
 }
 
 impl KillZombiesResult {
     pub fn total(&self) -> usize {
-        self.teams_cleaned + self.tmux_cleaned + self.shells_cleaned + self.idle_shells_cleaned
+        self.teams_cleaned + self.tmux_cleaned + self.shells_cleaned
+            + self.idle_shells_cleaned + self.stale_panes_cleaned
     }
 }
 
@@ -593,11 +674,55 @@ pub fn kill_zombies_with(sys: &System) -> KillZombiesResult {
                         }
                     }
                 }
+
+                // Stale pane: team deleted or done+lingering — kill if safe
+                if let Some(agent) = &pane.agent_name {
+                    let uptime = if pane.start_time > 0 {
+                        now.saturating_sub(pane.start_time)
+                    } else {
+                        0
+                    };
+                    let stale_reason = if !pane.team_exists {
+                        match pane.status {
+                            PaneStatus::Done | PaneStatus::Idle => true,
+                            PaneStatus::Active => false, // still active, skip auto-kill
+                            PaneStatus::Shell => false,  // already handled above
+                        }
+                    } else {
+                        pane.status == PaneStatus::Done && uptime >= IDLE_SHELL_UPTIME_MIN_SECS
+                    };
+
+                    if stale_reason {
+                        if kill_tmux_pane(&srv.socket_name, &pane.pane_id) {
+                            result.stale_panes_cleaned += 1;
+                        } else {
+                            result.errors.push(format!(
+                                "failed to kill stale pane {} ({}) in {}",
+                                pane.pane_id, agent, srv.socket_name
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
 
     result
+}
+
+/// Kill a tmux pane by socket name and pane ID. Returns true on success.
+fn kill_tmux_pane(socket_name: &str, pane_id: &str) -> bool {
+    if !pane_id.starts_with('%') || pane_id.len() <= 1 {
+        return false;
+    }
+    let digits = &pane_id[1..];
+    if !digits.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    std::process::Command::new("tmux")
+        .args(["-L", socket_name, "kill-pane", "-t", pane_id])
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 // ── Process Kill by PID ─────────────────────────────────────────
@@ -823,6 +948,9 @@ pub fn format_cleanup_result(result: &KillZombiesResult) -> String {
     }
     if result.idle_shells_cleaned > 0 {
         parts.push(format!("{} idle shell(s)", result.idle_shells_cleaned));
+    }
+    if result.stale_panes_cleaned > 0 {
+        parts.push(format!("{} stale pane(s)", result.stale_panes_cleaned));
     }
     if parts.is_empty() {
         "No zombies found".to_string()
@@ -1051,6 +1179,7 @@ mod tests {
             tmux_cleaned: 0,
             shells_cleaned: 0,
             idle_shells_cleaned: 0,
+            stale_panes_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 2);
@@ -1061,6 +1190,7 @@ mod tests {
             tmux_cleaned: 3,
             shells_cleaned: 0,
             idle_shells_cleaned: 0,
+            stale_panes_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 3);
@@ -1071,6 +1201,7 @@ mod tests {
             tmux_cleaned: 0,
             shells_cleaned: 5,
             idle_shells_cleaned: 0,
+            stale_panes_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 5);
@@ -1081,6 +1212,7 @@ mod tests {
             tmux_cleaned: 0,
             shells_cleaned: 0,
             idle_shells_cleaned: 4,
+            stale_panes_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 4);
@@ -1091,6 +1223,7 @@ mod tests {
             tmux_cleaned: 3,
             shells_cleaned: 5,
             idle_shells_cleaned: 1,
+            stale_panes_cleaned: 0,
             errors: vec!["some error".to_string()],
         };
         assert_eq!(result.total(), 11);
@@ -1121,6 +1254,31 @@ mod tests {
             uptime_secs: 500,
         };
         assert_eq!(idle.reason(), "claude process exited, shell idle too long");
+    }
+
+    // ── StalePane variant tests ────────────────────────────────────
+
+    #[test]
+    fn test_stale_pane_label_team_deleted_done() {
+        let stale = ZombieEntry::StalePane {
+            socket_name: "claude-swarm-123".to_string(),
+            pane_id: "%5".to_string(),
+            shell_pid: 99999,
+            claude_pid: Some(88888),
+            agent_name: "decree-arbiter".to_string(),
+            reason: StalePaneReason::TeamDeletedDone,
+        };
+        assert!(stale.label().contains("decree-arbiter"));
+        assert!(stale.label().contains("team deleted, work done"));
+        assert_eq!(stale.reason(), "team deleted, work done");
+    }
+
+    #[test]
+    fn test_stale_pane_reason_safe_to_kill() {
+        assert!(StalePaneReason::TeamDeletedDone.is_safe_to_kill());
+        assert!(StalePaneReason::TeamDeletedIdle.is_safe_to_kill());
+        assert!(StalePaneReason::DoneStale { uptime_secs: 600 }.is_safe_to_kill());
+        assert!(!StalePaneReason::TeamDeletedActive.is_safe_to_kill());
     }
 
     // ── AutoCleanup tests ────────────────────────────────────────────
@@ -1169,6 +1327,7 @@ mod tests {
             tmux_cleaned: 2,
             shells_cleaned: 0,
             idle_shells_cleaned: 3,
+            stale_panes_cleaned: 0,
             errors: vec!["err".to_string()],
         };
         assert_eq!(
@@ -1184,6 +1343,7 @@ mod tests {
             tmux_cleaned: 0,
             shells_cleaned: 0,
             idle_shells_cleaned: 0,
+            stale_panes_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(format_cleanup_result(&result), "Cleaned: 2 team(s)");

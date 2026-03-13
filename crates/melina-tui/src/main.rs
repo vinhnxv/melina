@@ -731,6 +731,13 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
                     format!("   in {} — idle too long", socket_name),
                 )
             }
+            ZombieEntry::StalePane { socket_name, pane_id, agent_name, reason, .. } => {
+                (
+                    "⊘",
+                    format!("{}. STALE: {} pane {}", i + 1, agent_name, pane_id),
+                    format!("   in {} — {}", socket_name, reason.label()),
+                )
+            }
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {} ", icon), Style::default().fg(Color::Red)),
