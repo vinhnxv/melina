@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_zombies_with, kill_process, format_cleanup_result, AutoCleanup, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_zombies_auto, kill_process, format_cleanup_result, AutoCleanup, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -247,7 +247,7 @@ fn main() -> Result<()> {
             if zombie_dialog.is_none() && matches!(kill_dialog, KillDialogState::Closed) {
                 // Auto-cleanup check (~5ns, just a timestamp compare)
                 let did_cleanup = if auto_cleanup.should_run() {
-                    let result = kill_zombies_with(&sys);
+                    let result = kill_zombies_auto(&sys, 30 * 60); // only kill zombies with 30+ min uptime
                     if result.total() > 0 {
                         status_msg = Some((format_cleanup_result(&result), Instant::now()));
                         // Force a full refresh after cleanup so UI reflects changes

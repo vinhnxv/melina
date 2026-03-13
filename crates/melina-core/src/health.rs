@@ -183,7 +183,11 @@ fn check_team_owner_alive(team: &TeamInfo, sys: &System) -> bool {
     alive.unwrap_or(false)
 }
 
-/// Check individual teammate health from inbox + task signals.
+/// Minimum CPU usage to consider a teammate still working,
+/// even if its inbox is stale. Covers LLM API wait, network I/O, etc.
+const TEAMMATE_ACTIVE_CPU_THRESHOLD: f32 = 0.5;
+
+/// Check individual teammate health from inbox + task + CPU signals.
 fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> TeammateHealth {
     let inbox_age = get_inbox_age(team, &member.name, now);
 
@@ -195,10 +199,14 @@ fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> Team
         return TeammateHealth::Completed;
     }
 
-    // If stuck tasks exist and inbox is stale
+    // CPU override: if process is using CPU, it's likely still working
+    // (waiting for LLM response, processing, etc.) — don't mark as stuck/stale
+    let is_cpu_active = member.cpu_percent > TEAMMATE_ACTIVE_CPU_THRESHOLD;
+
+    // If stuck tasks exist and inbox is stale (but not actively using CPU)
     if !stuck_tasks.is_empty() {
         if let Some(age) = inbox_age {
-            if age > TEAMMATE_STALE_SECS {
+            if age > TEAMMATE_STALE_SECS && !is_cpu_active {
                 return TeammateHealth::Stuck {
                     task_ids: stuck_tasks,
                 };
@@ -206,9 +214,9 @@ fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> Team
         }
     }
 
-    // If inbox is stale
+    // If inbox is stale (but not actively using CPU)
     if let Some(age) = inbox_age {
-        if age > TEAMMATE_STALE_SECS {
+        if age > TEAMMATE_STALE_SECS && !is_cpu_active {
             return TeammateHealth::Stale { idle_secs: age };
         }
     }
@@ -545,21 +553,46 @@ impl KillZombiesResult {
 /// For zombie teams: kills tmux teammates, removes team/task directories.
 /// For orphan tmux servers: kills the tmux server process.
 /// For orphan/idle shells: kills the empty tmux pane.
+/// Kill all zombies regardless of uptime (used by CLI `--kill-zombies` and TUI `k` key).
 pub fn kill_zombies() -> KillZombiesResult {
     let sys = create_process_system();
-    kill_zombies_with(&sys)
+    kill_zombies_filtered(&sys, 0)
 }
 
 /// Kill zombies using an existing System (no new allocation).
+/// Used by CLI `--kill-zombies` and TUI `k` key — no uptime filter.
 pub fn kill_zombies_with(sys: &System) -> KillZombiesResult {
+    kill_zombies_filtered(sys, 0)
+}
+
+/// Kill zombies that have been alive longer than `min_uptime_secs`.
+/// Used by auto-cleanup to avoid killing recently-started processes.
+pub fn kill_zombies_auto(sys: &System, min_uptime_secs: u64) -> KillZombiesResult {
+    kill_zombies_filtered(sys, min_uptime_secs)
+}
+
+/// Internal: kill zombies, optionally filtering by minimum uptime.
+fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResult {
     use crate::teams::{kill_tmux_server, scan_teams, scan_tmux_servers};
 
     let teams = scan_teams();
+    let now = now_epoch();
     let mut result = KillZombiesResult::default();
 
     for team in &teams {
         let report = check_team_health(team, sys);
         if !report.owner_alive {
+            // Skip young teams if uptime filter is active
+            if min_uptime_secs > 0 {
+                let oldest_start = team.members.iter()
+                    .filter(|m| m.start_time > 0)
+                    .map(|m| m.start_time)
+                    .min()
+                    .unwrap_or(now);
+                if now.saturating_sub(oldest_start) < min_uptime_secs {
+                    continue;
+                }
+            }
             // Kill tmux teammates
             for member in &team.members {
                 if member.name == "team-lead" {
@@ -613,9 +646,14 @@ pub fn kill_zombies_with(sys: &System) -> KillZombiesResult {
 
     // Kill orphan tmux servers and orphan/idle shell panes
     let tmux_servers = scan_tmux_servers(sys, true);
-    let now = now_epoch();
     for srv in &tmux_servers {
         if srv.is_orphan() {
+            // Skip young orphan servers if uptime filter is active
+            if min_uptime_secs > 0 && srv.start_time > 0
+                && now.saturating_sub(srv.start_time) < min_uptime_secs
+            {
+                continue;
+            }
             if kill_tmux_server(&srv.socket_name) {
                 result.tmux_cleaned += 1;
             } else {
@@ -626,6 +664,16 @@ pub fn kill_zombies_with(sys: &System) -> KillZombiesResult {
         } else {
             // Active server — kill orphan and idle shell panes
             for pane in &srv.panes {
+                // Skip young panes if uptime filter is active
+                let pane_uptime = if pane.start_time > 0 {
+                    now.saturating_sub(pane.start_time)
+                } else {
+                    0
+                };
+                if min_uptime_secs > 0 && pane_uptime < min_uptime_secs {
+                    continue;
+                }
+
                 if !pane.claude_alive {
                     let uptime = if pane.start_time > 0 {
                         now.saturating_sub(pane.start_time)

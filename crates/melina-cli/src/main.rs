@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, kill_zombies_with, format_cleanup_result, AutoCleanup, ChildKind, TeammateHealth, PaneStatus};
+use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, kill_zombies_auto, format_cleanup_result, AutoCleanup, ChildKind, TeammateHealth, PaneStatus};
 use sysinfo::{Pid, System};
 
 #[derive(Parser)]
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
 
             // Auto-cleanup check — just a timestamp compare, ~5ns cost
             if auto_cleanup.should_run() {
-                let result = kill_zombies_with(&sys);
+                let result = kill_zombies_auto(&sys, 30 * 60);
                 if result.total() > 0 {
                     println!("\n\x1b[33mAuto-cleanup:\x1b[0m {}", format_cleanup_result(&result));
                 }
