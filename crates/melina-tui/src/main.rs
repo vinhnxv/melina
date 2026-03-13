@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_process, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_zombies_with, kill_process, format_cleanup_result, AutoCleanup, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -30,10 +30,12 @@ fn main() -> Result<()> {
     let mut zombie_dialog: Option<Vec<ZombieEntry>> = None;
     // Kill-by-PID dialog state: list of selectable processes
     let mut kill_dialog: KillDialogState = KillDialogState::Closed;
+    // Auto-cleanup timer (starts disabled)
+    let mut auto_cleanup = AutoCleanup::new();
 
     loop {
         terminal.draw(|frame| {
-            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()), &sys);
+            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()), &sys, auto_cleanup.is_enabled());
             if let Some(ref zombies) = zombie_dialog {
                 draw_zombie_dialog(frame, zombies);
             }
@@ -102,20 +104,7 @@ fn main() -> Result<()> {
                                 let msg = if result.total() == 0 {
                                     "No zombies killed (already gone?)".to_string()
                                 } else {
-                                    let mut parts = Vec::new();
-                                    if result.teams_cleaned > 0 {
-                                        parts.push(format!("{} team(s)", result.teams_cleaned));
-                                    }
-                                    if result.tmux_cleaned > 0 {
-                                        parts.push(format!("{} tmux", result.tmux_cleaned));
-                                    }
-                                    if result.shells_cleaned > 0 {
-                                        parts.push(format!("{} shell(s)", result.shells_cleaned));
-                                    }
-                                    if !result.errors.is_empty() {
-                                        parts.push(format!("{} error(s)", result.errors.len()));
-                                    }
-                                    format!("Killed: {}", parts.join(", "))
+                                    format_cleanup_result(&result)
                                 };
                                 status_msg = Some((msg, Instant::now()));
                                 zombie_dialog = None;
@@ -157,6 +146,13 @@ fn main() -> Result<()> {
                                 kill_dialog = KillDialogState::Selecting { entries, selected: 0 };
                             }
                         },
+                        KeyCode::Char('a') => {
+                            let enabled = auto_cleanup.toggle();
+                            status_msg = Some((
+                                format!("Auto-cleanup: {}", if enabled { "ON (every 15m)" } else { "OFF" }),
+                                Instant::now(),
+                            ));
+                        },
                         _ => {}
                     }
                 }
@@ -166,15 +162,35 @@ fn main() -> Result<()> {
         if last_tick.elapsed() >= tick_rate {
             // Don't auto-refresh while any dialog is open
             if zombie_dialog.is_none() && matches!(kill_dialog, KillDialogState::Closed) {
-                let need_status = last_status_refresh.elapsed() >= status_interval;
-                let r = if need_status {
-                    last_status_refresh = Instant::now();
-                    refresh_full(&mut sys)
+                // Auto-cleanup check (~5ns, just a timestamp compare)
+                let did_cleanup = if auto_cleanup.should_run() {
+                    let result = kill_zombies_with(&sys);
+                    if result.total() > 0 {
+                        status_msg = Some((format_cleanup_result(&result), Instant::now()));
+                        // Force a full refresh after cleanup so UI reflects changes
+                        let r = refresh_full(&mut sys);
+                        trees = r.0;
+                        tmux_servers = r.1;
+                        last_status_refresh = Instant::now();
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    refresh_quick(&mut sys, &trees, &tmux_servers)
+                    false
                 };
-                trees = r.0;
-                tmux_servers = r.1;
+
+                if !did_cleanup {
+                    let need_status = last_status_refresh.elapsed() >= status_interval;
+                    let r = if need_status {
+                        last_status_refresh = Instant::now();
+                        refresh_full(&mut sys)
+                    } else {
+                        refresh_quick(&mut sys, &trees, &tmux_servers)
+                    };
+                    trees = r.0;
+                    tmux_servers = r.1;
+                }
                 last_tick = Instant::now();
             }
         }
@@ -262,7 +278,7 @@ fn format_uptime(start_time: u64) -> String {
     }
 }
 
-fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System) {
+fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System, auto_cleanup_enabled: bool) {
     let area = frame.area();
 
     let has_tmux = !tmux_servers.is_empty();
@@ -291,12 +307,14 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
     let total_children: usize = trees.iter().map(|t| t.children.len()).sum();
     let total_mem: u64 = trees.iter().map(|t| t.total_memory_bytes).sum();
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let auto_label = if auto_cleanup_enabled { " [AUTO-CLEAN]" } else { "" };
     let header = Paragraph::new(format!(
-        " melina — {} sessions | {} children | {:.0}MB total | {}",
+        " melina — {} sessions | {} children | {:.0}MB total | {}{}",
         total_sessions,
         total_children,
         total_mem as f64 / 1_048_576.0,
-        now
+        now,
+        auto_label
     ))
     .block(Block::default().borders(Borders::ALL).title(" Claude Code Monitor "));
     frame.render_widget(header, chunks[0]);
@@ -611,7 +629,7 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
     let footer_text = if let Some(msg) = status_msg {
         format!(" {} | q: quit | r: refresh | k: kill zombies", msg)
     } else {
-        " q: quit | r: refresh | k: kill zombies | d: kill PID | auto-refresh: 2s".to_string()
+        " q: quit | r: refresh | k: kill zombies | d: kill PID | a: auto-cleanup | 2s".to_string()
     };
     let footer_style = if status_msg.is_some() {
         Style::default().fg(Color::Green)
@@ -686,6 +704,13 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
                     "·",
                     format!("{}. SHELL: pane {} (sh:{})", i + 1, pane_id, shell_pid),
                     format!("   in {} — claude exited", socket_name),
+                )
+            }
+            ZombieEntry::IdleShell { socket_name, pane_id, shell_pid, uptime_secs } => {
+                (
+                    "◌",
+                    format!("{}. IDLE: pane {} (sh:{}, {}m)", i + 1, pane_id, shell_pid, uptime_secs / 60),
+                    format!("   in {} — idle too long", socket_name),
                 )
             }
         };

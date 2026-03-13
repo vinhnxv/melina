@@ -30,7 +30,8 @@ melina --watch 2          # Auto-refresh every 2s
 melina --json --teams     # JSON output with team info
 melina --kill-zombies     # Clean up dead teams + orphan tmux servers
 melina --kill <PID>       # Kill a Claude process by PID
-melina-tui                # Interactive dashboard (q=quit, r=refresh)
+melina --watch 2 --auto-cleanup  # Auto-refresh + periodic cleanup every 15 min
+melina-tui                # Interactive dashboard (q=quit, r=refresh, a=auto-cleanup)
 ```
 
 ## Code Map
@@ -39,7 +40,7 @@ melina-tui                # Interactive dashboard (q=quit, r=refresh)
 - `melina-core/src/classify.rs` — Child process classification (MCP, teammate, hook, bash)
 - `melina-core/src/tree.rs` — Parent-child session tree builder
 - `melina-core/src/teams.rs` — Agent team scanning from `.claude/` config dirs, tmux server detection
-- `melina-core/src/health.rs` — Health checks: zombie teams, stale/stuck teammates, orphan detection
+- `melina-core/src/health.rs` — Health checks: zombie teams, stale/stuck teammates, orphan/idle shell detection, auto-cleanup timer
 - `melina-cli/src/main.rs` — CLI entry point with clap arg parsing
 - `melina-tui/src/main.rs` — TUI dashboard with ratatui
 
