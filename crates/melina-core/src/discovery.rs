@@ -38,18 +38,41 @@ impl ProcessInfo {
     }
 
     /// Check if this process is a Claude Code root session.
+    ///
+    /// On macOS, `claude` is often a symlink to a versioned binary like
+    /// `.local/share/claude/versions/2.1.75`. Since sysinfo resolves symlinks
+    /// via `proc_pidpath()`, `proc.name()` may return `"2.1.75"` instead of
+    /// `"claude"`. We therefore rely on cmd args (argv), not the process name.
     pub fn is_claude_session(&self) -> bool {
-        let name = self.name.to_lowercase();
-        if !name.contains("claude") && !name.contains("node") {
+        let cmd_str = self.cmd.join(" ").to_lowercase();
+
+        // Must reference "claude" somewhere in the command line
+        if !cmd_str.contains("claude") {
             return false;
         }
-        // Root sessions: `claude` binary or node running claude
-        let cmd_str = self.cmd.join(" ").to_lowercase();
-        (cmd_str.contains("claude") && !cmd_str.contains("server.py"))
-            && self.cmd.first().is_some_and(|c| {
-                let c_lower = c.to_lowercase();
-                c_lower.contains("claude") || c_lower.contains("node")
-            })
+
+        // Exclude MCP servers (python scripts)
+        if cmd_str.contains("server.py") {
+            return false;
+        }
+
+        // Exclude teammate/agent processes (spawned with --agent-id)
+        if cmd_str.contains("--agent-id") {
+            return false;
+        }
+
+        // First arg must be a claude binary (direct name, node, or versioned path)
+        self.cmd.first().is_some_and(|c| {
+            let c_lower = c.to_lowercase();
+            c_lower.contains("claude") || c_lower.contains("node")
+                || Self::is_claude_versioned_binary(&c_lower)
+        })
+    }
+
+    /// Check if a binary path looks like a Claude versioned binary.
+    /// e.g. `/Users/x/.local/share/claude/versions/2.1.75`
+    fn is_claude_versioned_binary(path: &str) -> bool {
+        path.contains(".local/share/claude/versions/")
     }
 
     /// Check if this is a Claude-related child (MCP server, hook, etc.).
@@ -146,6 +169,54 @@ mod tests {
     fn test_is_claude_session_case_insensitive() {
         let info = make_process_info(1234, 1, "Claude", vec!["Claude"]);
         assert!(info.is_claude_session());
+    }
+
+    // BUG FIX: symlink-resolved binary name (macOS proc_pidpath resolves symlinks)
+    // `claude` -> `.local/share/claude/versions/2.1.75`, so proc.name() = "2.1.75"
+
+    #[test]
+    fn test_is_claude_session_resolved_symlink_name() {
+        // sysinfo reports resolved binary name, not the symlink
+        let info = make_process_info(
+            1234, 1, "2.1.75",
+            vec!["claude", "--dangerously-skip-permissions", "--teammate-mode", "tmux"],
+        );
+        assert!(info.is_claude_session());
+    }
+
+    #[test]
+    fn test_is_claude_session_versioned_binary_path() {
+        // Process launched via full versioned path
+        let info = make_process_info(
+            1234, 1, "2.1.75",
+            vec!["/Users/x/.local/share/claude/versions/2.1.75"],
+        );
+        assert!(info.is_claude_session());
+    }
+
+    #[test]
+    fn test_is_claude_session_excludes_teammates() {
+        // Teammate processes have --agent-id and should NOT be sessions
+        let info = make_process_info(
+            1234, 1, "2.1.75",
+            vec![
+                "/Users/x/.local/share/claude/versions/2.1.75",
+                "--agent-id", "worker-1@rune-work-123",
+                "--agent-name", "worker-1",
+                "--dangerously-skip-permissions",
+            ],
+        );
+        assert!(!info.is_claude_session());
+    }
+
+    #[test]
+    fn test_is_claude_session_excludes_mcp_with_claude_path() {
+        // MCP server in a .claude/ path should not be a session
+        let info = make_process_info(
+            1234, 1, "python3",
+            vec!["python3", "/home/user/.claude/plugins/echo-search/server.py"],
+        );
+        assert!(!info.is_claude_session());
     }
 
     // Tests for ProcessInfo::is_claude_related()
