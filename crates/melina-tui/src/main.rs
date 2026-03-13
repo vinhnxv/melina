@@ -11,6 +11,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
+use std::collections::HashMap;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,9 @@ fn main() -> Result<()> {
     let mut sys = create_process_system();
     let (mut trees, mut tmux_servers) = refresh_full(&mut sys);
     let mut status_msg: Option<(String, Instant)> = None;
+    // Debounce: ignore repeated key presses within 300ms
+    let debounce_duration = Duration::from_millis(300);
+    let mut last_key_time: HashMap<char, Instant> = HashMap::new();
     // Zombie confirmation dialog state
     let mut zombie_dialog: Option<Vec<ZombieEntry>> = None;
     // Kill-by-PID dialog state: list of selectable processes
@@ -122,15 +126,27 @@ fn main() -> Result<()> {
                         continue;
                     }
 
+                    // Debounce helper: skip if same key pressed within 300ms
+                    let debounced = |c: char, map: &mut HashMap<char, Instant>| -> bool {
+                        let now = Instant::now();
+                        if let Some(last) = map.get(&c) {
+                            if now.duration_since(*last) < debounce_duration {
+                                return true; // too soon, skip
+                            }
+                        }
+                        map.insert(c, now);
+                        false
+                    };
+
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
-                        KeyCode::Char('r') => {
+                        KeyCode::Char('r') if !debounced('r', &mut last_key_time) => {
                             let r = refresh_full(&mut sys);
                             trees = r.0;
                             tmux_servers = r.1;
                             last_status_refresh = Instant::now();
                         },
-                        KeyCode::Char('k') => {
+                        KeyCode::Char('k') if !debounced('k', &mut last_key_time) => {
                             let zombies = scan_zombies();
                             if zombies.is_empty() {
                                 status_msg = Some(("No zombies found. All clean.".to_string(), Instant::now()));
@@ -138,7 +154,7 @@ fn main() -> Result<()> {
                                 zombie_dialog = Some(zombies);
                             }
                         },
-                        KeyCode::Char('d') => {
+                        KeyCode::Char('d') if !debounced('d', &mut last_key_time) => {
                             let entries = build_killable_list(&trees, &tmux_servers);
                             if entries.is_empty() {
                                 status_msg = Some(("No killable processes.".to_string(), Instant::now()));
@@ -146,7 +162,7 @@ fn main() -> Result<()> {
                                 kill_dialog = KillDialogState::Selecting { entries, selected: 0 };
                             }
                         },
-                        KeyCode::Char('a') => {
+                        KeyCode::Char('a') if !debounced('a', &mut last_key_time) => {
                             let enabled = auto_cleanup.toggle();
                             status_msg = Some((
                                 format!("Auto-cleanup: {}", if enabled { "ON (every 15m)" } else { "OFF" }),
@@ -458,8 +474,9 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
             }
         }
 
-        // Child processes
-        for child in &tree.children {
+        // Child processes (indented under parent session)
+        let child_count = tree.children.len();
+        for (ci, child) in tree.children.iter().enumerate() {
             let kind_str = match &child.kind {
                 ChildKind::McpServer { server_name } => format!("MCP:{}", server_name),
                 ChildKind::Teammate { name } => format!("MATE:{}", name.as_deref().unwrap_or("?")),
@@ -473,10 +490,11 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 ChildKind::HookScript => Style::default().fg(Color::Magenta),
                 _ => Style::default().fg(Color::Blue).add_modifier(Modifier::DIM),
             };
+            let prefix = if ci == child_count - 1 { "  └─" } else { "  ├─" };
             let child_started = format_ts(child.info.start_time);
             let child_uptime = format_uptime(child.info.start_time);
             rows.push(Row::new(vec![
-                "  └─".to_string(),
+                prefix.to_string(),
                 format!("{}", child.info.pid),
                 kind_str,
                 format!("{:.1}%", child.info.cpu_percent),
@@ -756,6 +774,7 @@ struct KillableEntry {
     detail: String,   // e.g. "melina (main *) 291.3MB"
     status: String,   // e.g. "working", "ACTIVE", "IDLE"
     uptime: String,   // e.g. "8h58m", "37m"
+    indent: u8,       // 0 = root (SESSION/SWARM), 1 = child (MCP/PANE)
 }
 
 /// State machine for the kill-by-PID dialog.
@@ -799,6 +818,7 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
             detail: format!("{}{} {}", cwd_short, git, mem),
             status: tree.claude_status.label().to_string(),
             uptime,
+            indent: 0,
         });
 
         for child in &tree.children {
@@ -816,6 +836,7 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
                 detail: format!("{} {}", child.info.name, mem),
                 status: child.health.label().to_string(),
                 uptime: format_uptime(child.info.start_time),
+                indent: 1,
             });
         }
     }
@@ -830,7 +851,8 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
                 label: format!("SWARM:{}", srv.socket_name),
                 detail: format!("lead:{} {} panes {:.1}KB", srv.lead_pid, srv.panes.len(), srv.memory_bytes as f64 / 1024.0),
                 status: status.to_string(),
-                uptime: String::new(),
+                uptime: if srv.start_time > 0 { format_uptime(srv.start_time) } else { String::new() },
+                indent: 0,
             });
         }
 
@@ -846,10 +868,11 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
                 let team = pane.team_name.as_deref().unwrap_or("");
                 entries.push(KillableEntry {
                     pid: claude_pid,
-                    label: format!("  PANE:{}", agent),
+                    label: format!("PANE:{}", agent),
                     detail: format!("pane:{} {} {}", pane.pane_id, team, mem),
                     status: pane.status.label().to_string(),
-                    uptime: String::new(),
+                    uptime: if pane.start_time > 0 { format_uptime(pane.start_time) } else { String::new() },
+                    indent: 1,
                 });
             }
         }
@@ -884,11 +907,17 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
 
             let rows: Vec<Row> = entries.iter().enumerate().map(|(i, e)| {
                 let marker = if i == *selected { "> " } else { "  " };
+                let indent_prefix = if e.indent > 0 { "  " } else { "" };
+                let label_style = if e.indent > 0 {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                };
                 Row::new(vec![
                     Cell::from(format!("{}{}", marker, e.pid))
                         .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                    Cell::from(e.label.as_str())
-                        .style(Style::default().fg(Color::Cyan)),
+                    Cell::from(format!("{}{}", indent_prefix, e.label))
+                        .style(label_style),
                     Cell::from(e.status.as_str())
                         .style(Style::default().fg(Color::Green)),
                     Cell::from(e.uptime.as_str())
