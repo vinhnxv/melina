@@ -956,3 +956,227 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         ])
         .split(v[1])[1]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    // ── format_ts() tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_format_ts_valid() {
+        // Known epoch: 2024-01-15 12:30:45 UTC
+        // This is a fixed timestamp that should format consistently
+        let epoch: u64 = 1705319445;
+        let result = format_ts(epoch);
+        // The result should be in format "YYYY-MM-DD HH:MM:SS"
+        // Exact value depends on timezone, but we can verify the format
+        assert!(
+            result.len() == 19,
+            "Expected format 'YYYY-MM-DD HH:MM:SS' (19 chars), got '{}' ({} chars)",
+            result,
+            result.len()
+        );
+        // Verify the format pattern: digits and separators
+        let parts: Vec<&str> = result.split(' ').collect();
+        assert_eq!(parts.len(), 2, "Should have date and time parts");
+        let date_parts: Vec<&str> = parts[0].split('-').collect();
+        assert_eq!(date_parts.len(), 3, "Date should have 3 parts");
+        let time_parts: Vec<&str> = parts[1].split(':').collect();
+        assert_eq!(time_parts.len(), 3, "Time should have 3 parts");
+    }
+
+    #[test]
+    fn test_format_ts_zero() {
+        // Epoch 0 (Unix epoch start: 1970-01-01 00:00:00 UTC)
+        // Depending on timezone, this may be 1969 or 1970
+        let result = format_ts(0);
+        // Should either be a valid date string or "—" for invalid
+        // chrono's timestamp_opt returns None for ambiguous times,
+        // but epoch 0 should be valid in most cases
+        assert!(
+            result == "—" || result.contains('-'),
+            "Expected '—' or a date string, got '{}'",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_ts_current() {
+        // Current time should format correctly
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let result = format_ts(now_epoch);
+        // Should produce a valid date string, not "—"
+        assert_ne!(
+            result, "—",
+            "Current time should produce a valid date string"
+        );
+        // Should be in correct format
+        assert!(
+            result.len() == 19,
+            "Expected format 'YYYY-MM-DD HH:MM:SS' (19 chars), got '{}'",
+            result
+        );
+    }
+
+    // ── format_uptime() tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_format_uptime_minutes_only() {
+        // Test uptime less than 1 hour (e.g., 37 minutes)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Start time 37 minutes ago
+        let start_time = now - (37 * 60);
+        let result = format_uptime(start_time);
+        assert!(
+            result.starts_with("37m"),
+            "Expected '37m' format, got '{}'",
+            result
+        );
+        assert!(
+            !result.contains('h'),
+            "Should not contain hours for < 1 hour uptime, got '{}'",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_uptime_hours_and_minutes() {
+        // Test uptime >= 1 hour (e.g., 2 hours 15 minutes)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Start time 2 hours 15 minutes ago (135 minutes total)
+        let start_time = now - (2 * 3600 + 15 * 60);
+        let result = format_uptime(start_time);
+        assert!(
+            result.contains('h') && result.contains('m'),
+            "Expected 'NhNm' format, got '{}'",
+            result
+        );
+        // Should show "2h15m"
+        assert!(
+            result == "2h15m",
+            "Expected '2h15m', got '{}'",
+            result
+        );
+    }
+
+    #[test]
+    fn test_format_uptime_zero() {
+        // Start time = now should give 0 minutes uptime
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Use a start time very close to now (might be slightly in the past due to timing)
+        let result = format_uptime(now);
+        assert!(
+            result == "0m",
+            "Expected '0m' for same start time, got '{}'",
+            result
+        );
+    }
+
+    // ── centered_rect() tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_centered_rect_basic() {
+        // Test with a standard terminal size
+        let area = Rect::new(0, 0, 100, 50);
+        let result = centered_rect(60, 20, area);
+
+        // Should be centered horizontally: x should be around (100 - 60) / 2 = 20
+        assert!(
+            result.x == 20,
+            "Expected x=20 for centered 60-width in 100-wide area, got x={}",
+            result.x
+        );
+        // Should be centered vertically: y should be around (50 - 20) / 2 = 15
+        assert!(
+            result.y == 15,
+            "Expected y=15 for centered 20-height in 50-tall area, got y={}",
+            result.y
+        );
+        // Width and height should match requested values
+        assert_eq!(
+            result.width, 60,
+            "Expected width=60, got {}",
+            result.width
+        );
+        assert_eq!(
+            result.height, 20,
+            "Expected height=20, got {}",
+            result.height
+        );
+    }
+
+    #[test]
+    fn test_centered_rect_small_area() {
+        // Test when the requested rect is larger than available area
+        // Note: Constraint::Length clamps to available space, so the output
+        // will be smaller than requested when the area is too small
+        let area = Rect::new(0, 0, 40, 10);
+        let result = centered_rect(60, 20, area);
+
+        // The layout will clamp to available area since 60 > 40 and 20 > 10
+        // Width should be clamped to available width (40)
+        assert!(
+            result.width <= area.width,
+            "Width should be clamped to available area, got width={}, area width={}",
+            result.width,
+            area.width
+        );
+        // Height should be clamped to available height (10)
+        assert!(
+            result.height <= area.height,
+            "Height should be clamped to available area, got height={}, area height={}",
+            result.height,
+            area.height
+        );
+        // X and Y should still be computed (will be 0 when centered in small area)
+        assert!(
+            result.x < area.width,
+            "X should be within bounds"
+        );
+        assert!(
+            result.y < area.height,
+            "Y should be within bounds"
+        );
+    }
+
+    #[test]
+    fn test_centered_rect_width_height() {
+        // Verify that output has correct width and height
+        let area = Rect::new(0, 0, 80, 24);
+        let result = centered_rect(30, 10, area);
+
+        assert_eq!(
+            result.width, 30,
+            "Output width should match requested width 30, got {}",
+            result.width
+        );
+        assert_eq!(
+            result.height, 10,
+            "Output height should match requested height 10, got {}",
+            result.height
+        );
+
+        // Verify centering math
+        // x should be (80 - 30) / 2 = 25 (roughly, depends on layout)
+        // y should be (24 - 10) / 2 = 7 (roughly)
+        assert!(
+            result.x < 80 - 30 || result.x >= 25 - 1 && result.x <= 25 + 1,
+            "X should be approximately centered, got {}",
+            result.x
+        );
+    }
+}

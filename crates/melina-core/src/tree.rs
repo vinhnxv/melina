@@ -1,13 +1,13 @@
 //! Tree building — assemble flat process list into session trees.
 
-use crate::{ProcessInfo, ChildKind, Health, classify_child, check_health};
 use crate::git::GitContext;
 use crate::status::{ClaudeSessionStatus, detect_pane_status};
-use crate::teams::{TeamInfo, scan_teams, resolve_tmux_pids};
+use crate::teams::{TeamInfo, resolve_tmux_pids, scan_teams};
+use crate::{ChildKind, Health, ProcessInfo, check_health, classify_child};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use sysinfo::{System, Pid};
+use sysinfo::{Pid, System};
 
 /// A child process within a session tree.
 #[derive(Debug, Clone, Serialize)]
@@ -35,7 +35,11 @@ pub struct HostTmux {
 
 impl std::fmt::Display for HostTmux {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}.{}", self.session_name, self.window_index, self.pane_index)
+        write!(
+            f,
+            "{}:{}.{}",
+            self.session_name, self.window_index, self.pane_index
+        )
     }
 }
 
@@ -76,7 +80,10 @@ impl SessionTree {
 
     /// Count MCP server children (from process tree).
     pub fn mcp_count(&self) -> usize {
-        self.children.iter().filter(|c| matches!(c.kind, ChildKind::McpServer { .. })).count()
+        self.children
+            .iter()
+            .filter(|c| matches!(c.kind, ChildKind::McpServer { .. }))
+            .count()
     }
 
     /// Count teammates from team config (not process tree).
@@ -100,9 +107,12 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
             Some(first.as_str())
         } else {
             // Node might be running claude — look for claude in args
-            root.cmd.iter().find(|arg| {
-                arg.contains("claude") && !arg.contains("server.py") && !arg.starts_with("--")
-            }).map(|s| s.as_str())
+            root.cmd
+                .iter()
+                .find(|arg| {
+                    arg.contains("claude") && !arg.contains("server.py") && !arg.starts_with("--")
+                })
+                .map(|s| s.as_str())
         }
     })?;
 
@@ -124,7 +134,11 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
         .unwrap_or(&version_str)
         .to_string();
 
-    if version.is_empty() { None } else { Some(version) }
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
 }
 
 /// A raw tmux pane entry from `tmux list-panes`.
@@ -142,8 +156,12 @@ fn query_host_tmux_panes() -> Vec<TmuxPaneEntry> {
     use std::process::Command;
 
     let output = Command::new("tmux")
-        .args(["list-panes", "-a", "-F",
-               "#{pane_pid}|#{session_name}|#{window_index}|#{pane_index}|#{pane_id}|#{pid}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_pid}|#{session_name}|#{window_index}|#{pane_index}|#{pane_id}|#{pid}",
+        ])
         .output();
 
     let stdout = match output {
@@ -151,18 +169,23 @@ fn query_host_tmux_panes() -> Vec<TmuxPaneEntry> {
         _ => return Vec::new(),
     };
 
-    stdout.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.splitn(6, '|').collect();
-        if parts.len() != 6 { return None; }
-        Some(TmuxPaneEntry {
-            pane_pid: parts[0].parse().ok()?,
-            session_name: parts[1].to_string(),
-            window_index: parts[2].parse().ok()?,
-            pane_index: parts[3].parse().ok()?,
-            pane_id: parts[4].to_string(),
-            server_pid: parts[5].parse().ok()?,
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() != 6 {
+                return None;
+            }
+            Some(TmuxPaneEntry {
+                pane_pid: parts[0].parse().ok()?,
+                session_name: parts[1].to_string(),
+                window_index: parts[2].parse().ok()?,
+                pane_index: parts[3].parse().ok()?,
+                pane_id: parts[4].to_string(),
+                server_pid: parts[5].parse().ok()?,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Detect if a Claude root process is running inside a user's tmux session.
@@ -197,7 +220,8 @@ fn detect_host_tmux(
         }
 
         // Move to parent
-        let parent_pid = sys.process(Pid::from_u32(current_pid))
+        let parent_pid = sys
+            .process(Pid::from_u32(current_pid))
             .and_then(|p| p.parent())
             .map(|p| p.as_u32());
 
@@ -214,7 +238,11 @@ fn detect_host_tmux(
 /// Accepts a pre-created `System` to avoid redundant process table loads.
 /// When `skip_status` is true, skips expensive capture-pane/jsonl status detection
 /// and sets `claude_status` to `Unknown` (caller should merge from cache).
-pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool) -> Vec<SessionTree> {
+pub fn build_trees(
+    processes: Vec<ProcessInfo>,
+    sys: &System,
+    skip_status: bool,
+) -> Vec<SessionTree> {
     let by_pid: HashMap<u32, &ProcessInfo> = processes.iter().map(|p| (p.pid, p)).collect();
 
     // Query host tmux panes once for all sessions
@@ -245,12 +273,16 @@ pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool)
                 let kind = classify_child(p);
                 let is_mcp = matches!(kind, ChildKind::McpServer { .. });
                 let health = check_health(p, is_mcp, &sys);
-                ChildProcess { info: p.clone(), kind, health }
+                ChildProcess {
+                    info: p.clone(),
+                    kind,
+                    health,
+                }
             })
             .collect();
 
-        let total_memory = root.memory_bytes
-            + children.iter().map(|c| c.info.memory_bytes).sum::<u64>();
+        let total_memory =
+            root.memory_bytes + children.iter().map(|c| c.info.memory_bytes).sum::<u64>();
 
         let config_dir = detect_config_dir(root, &children);
         let root_health = check_health(root, false, &sys);
@@ -275,8 +307,8 @@ pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool)
         // Detect Claude session status: skip expensive capture-pane if requested
         let claude_status = if skip_status {
             // CPU-based heuristic only (cheap)
-            let total_cpu: f32 = root.cpu_percent
-                + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            let total_cpu: f32 =
+                root.cpu_percent + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
             if total_cpu > 0.5 {
                 ClaudeSessionStatus::Working
             } else {
@@ -286,8 +318,8 @@ pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool)
             detect_pane_status(&tmux.pane_id)
         } else {
             // No tmux pane — fallback to CPU-based heuristic
-            let total_cpu: f32 = root.cpu_percent
-                + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            let total_cpu: f32 =
+                root.cpu_percent + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
             if total_cpu > 0.5 {
                 ClaudeSessionStatus::Working
             } else {
@@ -370,7 +402,8 @@ fn match_teams_to_session(
         }
 
         // Match by owner_pid in .session file → root PID
-        let session_path = team.config_dir
+        let session_path = team
+            .config_dir
             .join("teams")
             .join(&team.name)
             .join(".session");
@@ -381,7 +414,8 @@ fn match_teams_to_session(
                         if pid == root.pid {
                             // Also grab session_id from .session file if we don't have one yet
                             if found_session_id.is_none() {
-                                found_session_id = session.get("session_id")
+                                found_session_id = session
+                                    .get("session_id")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
                             }
@@ -424,4 +458,185 @@ fn detect_config_dir(_root: &ProcessInfo, children: &[ChildProcess]) -> Option<P
 
 fn detect_terminal(_root: &ProcessInfo) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Helper to create a ProcessInfo for testing.
+    fn make_process_info(pid: u32, ppid: u32, name: &str, cmd: Vec<&str>) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid,
+            name: name.to_string(),
+            cmd: cmd.iter().map(|s| s.to_string()).collect(),
+            cwd: PathBuf::new(),
+            memory_bytes: 0,
+            cpu_percent: 0.0,
+            start_time: 0,
+            status: "Run".to_string(),
+        }
+    }
+
+    /// Helper to create a ChildProcess for testing.
+    fn make_child_process(info: ProcessInfo, kind: ChildKind) -> ChildProcess {
+        ChildProcess {
+            info,
+            kind,
+            health: Health::Ok,
+        }
+    }
+
+    /// Helper to create a SessionTree for testing.
+    fn make_session_tree(
+        root: ProcessInfo,
+        children: Vec<ChildProcess>,
+        teams: Vec<TeamInfo>,
+    ) -> SessionTree {
+        SessionTree {
+            root,
+            root_health: Health::Ok,
+            children,
+            config_dir: None,
+            terminal: None,
+            total_memory_bytes: 0,
+            teams,
+            session_id: None,
+            working_dir: None,
+            claude_version: None,
+            host_tmux: None,
+            claude_status: ClaudeSessionStatus::Unknown,
+            git_context: None,
+        }
+    }
+
+    /// Helper to create a TeamInfo for testing.
+    fn make_team_info(name: &str, member_names: &[&str]) -> TeamInfo {
+        TeamInfo {
+            name: name.to_string(),
+            config_dir: PathBuf::new(),
+            lead_session_id: None,
+            members: member_names
+                .iter()
+                .map(|n| crate::teams::TeamMember {
+                    name: n.to_string(),
+                    agent_type: String::new(),
+                    model: String::new(),
+                    backend_type: String::new(),
+                    cwd: String::new(),
+                    tmux_pane_id: String::new(),
+                    tmux_pid: None,
+                    memory_bytes: 0,
+                    cpu_percent: 0.0,
+                    start_time: 0,
+                })
+                .collect(),
+            task_count: 0,
+        }
+    }
+
+    // ── config_label() tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_config_label_with_dir() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let tree = SessionTree {
+            config_dir: Some(PathBuf::from("/home/user/.claude-work")),
+            ..make_session_tree(root, vec![], vec![])
+        };
+        assert_eq!(tree.config_label(), ".claude-work");
+    }
+
+    #[test]
+    fn test_config_label_none() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let tree = make_session_tree(root, vec![], vec![]);
+        assert_eq!(tree.config_label(), "default");
+    }
+
+    // ── mcp_count() tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_count_empty() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let tree = make_session_tree(root, vec![], vec![]);
+        assert_eq!(tree.mcp_count(), 0);
+    }
+
+    #[test]
+    fn test_mcp_count_mixed() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let mcp_child = make_child_process(
+            make_process_info(2, 1, "node", vec!["node", "server.py"]),
+            ChildKind::McpServer {
+                server_name: "echo-search".to_string(),
+            },
+        );
+        let bash_child = make_child_process(
+            make_process_info(3, 1, "bash", vec!["bash"]),
+            ChildKind::BashTool,
+        );
+        let another_mcp = make_child_process(
+            make_process_info(4, 1, "node", vec!["node", "mcp-server"]),
+            ChildKind::McpServer {
+                server_name: "figma".to_string(),
+            },
+        );
+        let tree = make_session_tree(root, vec![mcp_child, bash_child, another_mcp], vec![]);
+        assert_eq!(tree.mcp_count(), 2);
+    }
+
+    // ── teammate_count() tests ───────────────────────────────────────
+
+    #[test]
+    fn test_teammate_count_empty() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let tree = make_session_tree(root, vec![], vec![]);
+        assert_eq!(tree.teammate_count(), 0);
+    }
+
+    #[test]
+    fn test_teammate_count_with_teams() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        // Team with team-lead + 2 teammates (should count only 2)
+        let team1 = make_team_info("team-alpha", &["team-lead", "researcher", "coder"]);
+        // Team with team-lead + 1 teammate (should count only 1)
+        let team2 = make_team_info("team-beta", &["team-lead", "tester"]);
+        let tree = make_session_tree(root, vec![], vec![team1, team2]);
+        assert_eq!(tree.teammate_count(), 3);
+    }
+
+    // ── team_names() tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_team_names_empty() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let tree = make_session_tree(root, vec![], vec![]);
+        assert!(tree.team_names().is_empty());
+    }
+
+    #[test]
+    fn test_team_names_multiple() {
+        let root = make_process_info(1, 0, "claude", vec!["claude"]);
+        let team1 = make_team_info("alpha-team", &["team-lead"]);
+        let team2 = make_team_info("beta-team", &["team-lead"]);
+        let tree = make_session_tree(root, vec![], vec![team1, team2]);
+        assert_eq!(tree.team_names(), vec!["alpha-team", "beta-team"]);
+    }
+
+    // ── HostTmux::Display tests ──────────────────────────────────────
+
+    #[test]
+    fn test_host_tmux_display() {
+        let host_tmux = HostTmux {
+            session_name: "main".to_string(),
+            window_index: 0,
+            pane_index: 1,
+            pane_id: "%0".to_string(),
+            server_pid: 12345,
+        };
+        assert_eq!(format!("{}", host_tmux), "main:0.1");
+    }
 }

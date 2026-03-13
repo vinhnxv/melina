@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use sysinfo::{System, Pid};
+use sysinfo::{Pid, System};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +46,10 @@ pub struct TeamInfo {
 impl TeamInfo {
     /// Non-lead members (actual teammates, not the lead itself).
     pub fn teammates(&self) -> Vec<&TeamMember> {
-        self.members.iter().filter(|m| m.name != "team-lead").collect()
+        self.members
+            .iter()
+            .filter(|m| m.name != "team-lead")
+            .collect()
     }
 }
 
@@ -72,7 +75,6 @@ pub fn scan_teams() -> Vec<TeamInfo> {
 
     teams
 }
-
 
 fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let config_path = team_dir.join("config.json");
@@ -127,7 +129,9 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     // (e.g. task owner "codex-phase-handler" matches member "codex-phase-handler-sv")
     let known_names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
     for owner in &task_owners {
-        let already_known = known_names.iter().any(|n| n == owner || n.starts_with(owner) || owner.starts_with(n));
+        let already_known = known_names
+            .iter()
+            .any(|n| n == owner || n.starts_with(owner) || owner.starts_with(n));
         if !already_known {
             members.push(TeamMember {
                 name: owner.clone(),
@@ -197,7 +201,9 @@ pub fn resolve_tmux_pids(teams: &mut [TeamInfo], sys: &System) {
                 let claude_proc = sys.processes().values().find(|p| {
                     p.parent() == Some(Pid::from_u32(pane_pid)) && {
                         let name = p.name().to_string_lossy();
-                        let cmd_str = p.cmd().iter()
+                        let cmd_str = p
+                            .cmd()
+                            .iter()
                             .map(|s| s.to_string_lossy())
                             .collect::<Vec<_>>()
                             .join(" ");
@@ -235,9 +241,7 @@ fn build_tmux_pane_map() -> Vec<(String, std::collections::HashMap<String, u32>)
     let mut result = Vec::new();
 
     // Find tmux server processes to discover socket names
-    let ps_output = Command::new("ps")
-        .args(["-eo", "args"])
-        .output();
+    let ps_output = Command::new("ps").args(["-eo", "args"]).output();
 
     let ps_str = match ps_output {
         Ok(ref out) => String::from_utf8_lossy(&out.stdout).to_string(),
@@ -249,9 +253,7 @@ fn build_tmux_pane_map() -> Vec<(String, std::collections::HashMap<String, u32>)
         // Match: tmux -L claude-swarm-NNNNN ...
         if let Some(pos) = line.find("claude-swarm-") {
             let after = &line[pos..];
-            let socket_name: String = after.chars()
-                .take_while(|c| !c.is_whitespace())
-                .collect();
+            let socket_name: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
             if !socket_name.is_empty() && !sockets.contains(&socket_name) {
                 // Validate socket name format to prevent injection.
                 // Expected pattern: claude-swarm-{pid} where pid is numeric.
@@ -266,8 +268,14 @@ fn build_tmux_pane_map() -> Vec<(String, std::collections::HashMap<String, u32>)
     // Query each socket for pane→pid mapping
     for socket in &sockets {
         let output = Command::new("tmux")
-            .args(["-L", socket, "list-panes", "-a",
-                   "-F", "#{pane_id}|#{pane_pid}"])
+            .args([
+                "-L",
+                socket,
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id}|#{pane_pid}",
+            ])
             .output();
 
         if let Ok(out) = output {
@@ -385,9 +393,7 @@ pub fn scan_tmux_servers(sys: &System, skip_status: bool) -> Vec<TmuxServer> {
     use std::process::Command;
 
     // Find tmux server processes: `tmux -L claude-swarm-NNNNN ...`
-    let ps_output = Command::new("ps")
-        .args(["-eo", "pid,args"])
-        .output();
+    let ps_output = Command::new("ps").args(["-eo", "pid,args"]).output();
 
     let ps_str = match ps_output {
         Ok(ref out) => String::from_utf8_lossy(&out.stdout).to_string(),
@@ -404,15 +410,12 @@ pub fn scan_tmux_servers(sys: &System, skip_status: bool) -> Vec<TmuxServer> {
         }
 
         // Extract PID from the start of the line
-        let server_pid: Option<u32> = line.split_whitespace().next()
-            .and_then(|s| s.parse().ok());
+        let server_pid: Option<u32> = line.split_whitespace().next().and_then(|s| s.parse().ok());
 
         // Extract socket name
         if let Some(pos) = line.find("claude-swarm-") {
             let after = &line[pos..];
-            let socket_name: String = after.chars()
-                .take_while(|c| !c.is_whitespace())
-                .collect();
+            let socket_name: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
 
             let suffix = &socket_name["claude-swarm-".len()..];
             if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
@@ -430,8 +433,7 @@ pub fn scan_tmux_servers(sys: &System, skip_status: bool) -> Vec<TmuxServer> {
             let lead_alive = sys.process(Pid::from_u32(lead_pid)).is_some();
 
             // Get tmux server memory and start time
-            let server_proc = server_pid
-                .and_then(|pid| sys.process(Pid::from_u32(pid)));
+            let server_proc = server_pid.and_then(|pid| sys.process(Pid::from_u32(pid)));
             let memory_bytes = server_proc.map(|p| p.memory()).unwrap_or(0);
             let start_time = server_proc.map(|p| p.start_time()).unwrap_or(0);
 
@@ -459,8 +461,14 @@ fn query_tmux_panes(socket: &str, sys: &System, skip_status: bool) -> Vec<TmuxPa
     use std::process::Command;
 
     let output = Command::new("tmux")
-        .args(["-L", socket, "list-panes", "-a",
-               "-F", "#{pane_id}|#{pane_pid}"])
+        .args([
+            "-L",
+            socket,
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id}|#{pane_pid}",
+        ])
         .output();
 
     let stdout = match output {
@@ -468,27 +476,43 @@ fn query_tmux_panes(socket: &str, sys: &System, skip_status: bool) -> Vec<TmuxPa
         Err(_) => return Vec::new(),
     };
 
-    stdout.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.splitn(2, '|').collect();
-        if parts.len() != 2 { return None; }
-        let shell_pid: u32 = parts[1].parse().ok()?;
-        let pane_id = parts[0].to_string();
-
-        // Look for a claude child process under this shell
-        let claude_proc = sys.processes().values().find(|p| {
-            p.parent() == Some(Pid::from_u32(shell_pid)) && {
-                let cmd_str = p.cmd().iter()
-                    .map(|s| s.to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                cmd_str.contains("claude") || cmd_str.contains("--agent-id")
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.len() != 2 {
+                return None;
             }
-        });
+            let shell_pid: u32 = parts[1].parse().ok()?;
+            let pane_id = parts[0].to_string();
 
-        let (claude_pid, claude_alive, agent_name, agent_type, team_name, memory_bytes, cpu_percent, start_time) =
-            match claude_proc {
+            // Look for a claude child process under this shell
+            let claude_proc = sys.processes().values().find(|p| {
+                p.parent() == Some(Pid::from_u32(shell_pid)) && {
+                    let cmd_str = p
+                        .cmd()
+                        .iter()
+                        .map(|s| s.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    cmd_str.contains("claude") || cmd_str.contains("--agent-id")
+                }
+            });
+
+            let (
+                claude_pid,
+                claude_alive,
+                agent_name,
+                agent_type,
+                team_name,
+                memory_bytes,
+                cpu_percent,
+                start_time,
+            ) = match claude_proc {
                 Some(p) => {
-                    let cmd: Vec<String> = p.cmd().iter()
+                    let cmd: Vec<String> = p
+                        .cmd()
+                        .iter()
                         .map(|s| s.to_string_lossy().to_string())
                         .collect();
                     (
@@ -505,34 +529,50 @@ fn query_tmux_panes(socket: &str, sys: &System, skip_status: bool) -> Vec<TmuxPa
                 None => (None, false, None, None, None, 0, 0.0, 0),
             };
 
-        let (last_line, status, team_exists) = if skip_status {
-            // Quick mode: skip capture-pane, jsonl, and filesystem checks
-            let quick_status = if !claude_alive {
-                PaneStatus::Shell
-            } else if cpu_percent < 0.5 {
-                PaneStatus::Idle
+            let (last_line, status, team_exists) = if skip_status {
+                // Quick mode: skip capture-pane, jsonl, and filesystem checks
+                let quick_status = if !claude_alive {
+                    PaneStatus::Shell
+                } else if cpu_percent < 0.5 {
+                    PaneStatus::Idle
+                } else {
+                    PaneStatus::Active
+                };
+                (None, quick_status, true)
             } else {
-                PaneStatus::Active
+                let line = capture_pane_last_line(socket, &pane_id);
+                let st = derive_pane_status(
+                    claude_alive,
+                    cpu_percent,
+                    line.as_deref(),
+                    team_name.as_deref(),
+                    agent_name.as_deref(),
+                );
+                let exists = team_name.as_ref().map_or(true, |tn| {
+                    discover_config_dirs()
+                        .iter()
+                        .any(|d| d.join("teams").join(tn).is_dir())
+                });
+                (line, st, exists)
             };
-            (None, quick_status, true)
-        } else {
-            let line = capture_pane_last_line(socket, &pane_id);
-            let st = derive_pane_status(
-                claude_alive, cpu_percent, line.as_deref(),
-                team_name.as_deref(), agent_name.as_deref(),
-            );
-            let exists = team_name.as_ref().map_or(true, |tn| {
-                discover_config_dirs().iter().any(|d| d.join("teams").join(tn).is_dir())
-            });
-            (line, st, exists)
-        };
 
-        Some(TmuxPane {
-            pane_id, shell_pid, claude_pid, claude_alive,
-            agent_name, agent_type, team_name, memory_bytes, cpu_percent, start_time,
-            last_line, status, team_exists,
+            Some(TmuxPane {
+                pane_id,
+                shell_pid,
+                claude_pid,
+                claude_alive,
+                agent_name,
+                agent_type,
+                team_name,
+                memory_bytes,
+                cpu_percent,
+                start_time,
+                last_line,
+                status,
+                team_exists,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Capture the last meaningful line from a tmux pane.
@@ -540,36 +580,57 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
     use std::process::Command;
 
     let output = Command::new("tmux")
-        .args(["-L", socket, "capture-pane", "-t", pane_id, "-p", "-S", "-30"])
+        .args([
+            "-L",
+            socket,
+            "capture-pane",
+            "-t",
+            pane_id,
+            "-p",
+            "-S",
+            "-30",
+        ])
         .output()
         .ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Find last non-empty, meaningful line (strip control/box-drawing chars)
-    stdout.lines()
+    stdout
+        .lines()
         .rev()
         .filter_map(|l| {
             // Strip non-ASCII control chars and box-drawing Unicode
-            let clean: String = l.chars()
+            let clean: String = l
+                .chars()
                 .filter(|c| {
                     let cp = *c as u32;
                     // Keep ASCII printable (0x20-0x7E) and common Unicode text
                     // Skip: C0/C1 control (0-0x1F, 0x80-0x9F), box drawing (0x2500-0x257F),
                     // block elements (0x2580-0x259F), private use, etc.
                     (0x20..=0x7E).contains(&cp)
-                        || (cp > 0x9F && !(0x2500..=0x259F).contains(&cp)
+                        || (cp > 0x9F
+                            && !(0x2500..=0x259F).contains(&cp)
                             && !(0xE000..=0xF8FF).contains(&cp))
                 })
                 .collect();
             let trimmed = clean.trim().to_string();
 
-            if trimmed.is_empty() { return None; }
+            if trimmed.is_empty() {
+                return None;
+            }
 
             // Skip Claude Code UI chrome lines (prompt, status bar, permissions)
             let skip_patterns = [
-                "❯", "bypass permissions", "rune-plugin", "melina",
-                "shift+tab", "⏵", "⏺", "✻ Worked for", "⎇",
+                "❯",
+                "bypass permissions",
+                "rune-plugin",
+                "melina",
+                "shift+tab",
+                "⏵",
+                "⏺",
+                "✻ Worked for",
+                "⎇",
             ];
             if skip_patterns.iter().any(|p| trimmed.starts_with(p))
                 || trimmed.contains("permissions on")
@@ -581,13 +642,19 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
                 return None;
             }
             // Skip lines that are mostly box-drawing remnants (very short after cleaning)
-            if trimmed.len() < 4 { return None; }
+            if trimmed.len() < 4 {
+                return None;
+            }
 
             Some(trimmed)
         })
         .next()
         .map(|s| {
-            if s.len() > 80 { format!("{}…", &s[..79]) } else { s }
+            if s.len() > 80 {
+                format!("{}…", &s[..79])
+            } else {
+                s
+            }
         })
 }
 
@@ -666,7 +733,8 @@ fn check_transcript_has_shutdown(agent_name: &str) -> bool {
                         let path = file.path();
                         if path.extension().is_some_and(|e| e == "jsonl") {
                             // Check mtime
-                            let mtime = path.metadata()
+                            let mtime = path
+                                .metadata()
                                 .and_then(|m| m.modified())
                                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                             if mtime < cutoff {
@@ -686,7 +754,11 @@ fn check_transcript_has_shutdown(agent_name: &str) -> bool {
 }
 
 /// Scan last portion of a .jsonl file for shutdown_request to a specific recipient.
-fn scan_jsonl_for_shutdown(path: &std::path::Path, needle_recipient: &str, needle_type: &str) -> bool {
+fn scan_jsonl_for_shutdown(
+    path: &std::path::Path,
+    needle_recipient: &str,
+    needle_type: &str,
+) -> bool {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let file = match std::fs::File::open(path) {
@@ -721,10 +793,19 @@ fn scan_jsonl_for_shutdown(path: &std::path::Path, needle_recipient: &str, needl
 fn check_inbox_has_shutdown(team_name: &str, agent_name: &str) -> bool {
     let config_dirs = discover_config_dirs();
     let done_keywords = [
-        "shutdown", "shut down", "terminate",
-        "no work left", "no unblocked tasks", "all tasks complete",
-        "awaiting shutdown", "idle", "tasks done", "seal:",
-        "final integration", "all done", "work complete",
+        "shutdown",
+        "shut down",
+        "terminate",
+        "no work left",
+        "no unblocked tasks",
+        "all tasks complete",
+        "awaiting shutdown",
+        "idle",
+        "tasks done",
+        "seal:",
+        "final integration",
+        "all done",
+        "work complete",
     ];
 
     for config_dir in &config_dirs {
@@ -836,4 +917,163 @@ fn discover_config_dirs() -> Vec<PathBuf> {
     }
 
     dirs
+}
+
+// ── Unit Tests ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Test Helpers ──────────────────────────────────────────────
+
+    fn make_member(name: &str) -> TeamMember {
+        TeamMember {
+            name: name.to_string(),
+            agent_type: String::new(),
+            model: String::new(),
+            backend_type: String::new(),
+            cwd: String::new(),
+            tmux_pane_id: String::new(),
+            tmux_pid: None,
+            memory_bytes: 0,
+            cpu_percent: 0.0,
+            start_time: 0,
+        }
+    }
+
+    fn make_team_info(members: Vec<TeamMember>) -> TeamInfo {
+        TeamInfo {
+            name: "test-team".to_string(),
+            config_dir: PathBuf::from("/tmp/test"),
+            lead_session_id: None,
+            members,
+            task_count: 0,
+        }
+    }
+
+    fn make_tmux_server(lead_alive: bool) -> TmuxServer {
+        TmuxServer {
+            socket_name: "claude-swarm-12345".to_string(),
+            lead_pid: 12345,
+            server_pid: Some(67890),
+            lead_alive,
+            panes: Vec::new(),
+            memory_bytes: 0,
+            start_time: 0,
+        }
+    }
+
+    // ── TeamInfo::teammates() Tests ───────────────────────────────
+
+    #[test]
+    fn test_teammates_filters_lead() {
+        let members = vec![
+            make_member("team-lead"),
+            make_member("researcher"),
+            make_member("coder"),
+        ];
+        let team = make_team_info(members);
+
+        let teammates = team.teammates();
+        let names: Vec<&str> = teammates.iter().map(|m| m.name.as_str()).collect();
+
+        assert!(!names.contains(&"team-lead"));
+    }
+
+    #[test]
+    fn test_teammates_returns_others() {
+        let members = vec![
+            make_member("team-lead"),
+            make_member("researcher"),
+            make_member("coder"),
+        ];
+        let team = make_team_info(members);
+
+        let teammates = team.teammates();
+        let names: Vec<&str> = teammates.iter().map(|m| m.name.as_str()).collect();
+
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"researcher"));
+        assert!(names.contains(&"coder"));
+    }
+
+    // ── TmuxServer Tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_tmux_server_is_orphan_true() {
+        let server = make_tmux_server(false);
+        assert!(server.is_orphan());
+    }
+
+    #[test]
+    fn test_tmux_server_is_orphan_false() {
+        let server = make_tmux_server(true);
+        assert!(!server.is_orphan());
+    }
+
+    #[test]
+    fn test_tmux_server_label_active() {
+        let server = make_tmux_server(true);
+        assert_eq!(server.label(), "ACTIVE");
+    }
+
+    #[test]
+    fn test_tmux_server_label_orphan() {
+        let server = make_tmux_server(false);
+        assert_eq!(server.label(), "ORPHAN");
+    }
+
+    // ── PaneStatus Tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_pane_status_label() {
+        assert_eq!(PaneStatus::Active.label(), "ACTIVE");
+        assert_eq!(PaneStatus::Idle.label(), "IDLE");
+        assert_eq!(PaneStatus::Done.label(), "DONE");
+        assert_eq!(PaneStatus::Shell.label(), "SHELL");
+    }
+
+    #[test]
+    fn test_pane_status_display() {
+        assert_eq!(format!("{}", PaneStatus::Active), "ACTIVE");
+        assert_eq!(format!("{}", PaneStatus::Idle), "IDLE");
+        assert_eq!(format!("{}", PaneStatus::Done), "DONE");
+        assert_eq!(format!("{}", PaneStatus::Shell), "SHELL");
+    }
+
+    // ── extract_arg() Tests ───────────────────────────────────────
+
+    #[test]
+    fn test_extract_arg_found() {
+        let cmd = vec![
+            "claude".to_string(),
+            "--agent-name".to_string(),
+            "researcher".to_string(),
+            "--team-name".to_string(),
+            "alpha".to_string(),
+        ];
+        assert_eq!(
+            extract_arg(&cmd, "--agent-name"),
+            Some("researcher".to_string())
+        );
+        assert_eq!(extract_arg(&cmd, "--team-name"), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn test_extract_arg_not_found() {
+        let cmd = vec![
+            "claude".to_string(),
+            "--agent-name".to_string(),
+            "researcher".to_string(),
+        ];
+        assert_eq!(extract_arg(&cmd, "--missing-flag"), None);
+    }
+
+    #[test]
+    fn test_extract_arg_last_arg() {
+        // Flag at end of args has no value after it
+        let cmd = vec!["claude".to_string(), "--agent-name".to_string()];
+        assert_eq!(extract_arg(&cmd, "--agent-name"), None);
+    }
 }

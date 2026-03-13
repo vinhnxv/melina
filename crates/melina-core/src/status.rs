@@ -43,10 +43,10 @@ impl ClaudeSessionStatus {
     /// Returns the ANSI-colored symbol for CLI output.
     pub fn colored_symbol(&self) -> &'static str {
         match self {
-            ClaudeSessionStatus::Working => "\x1b[32m●\x1b[0m",     // green
-            ClaudeSessionStatus::Idle => "\x1b[33m○\x1b[0m",        // yellow
+            ClaudeSessionStatus::Working => "\x1b[32m●\x1b[0m", // green
+            ClaudeSessionStatus::Idle => "\x1b[33m○\x1b[0m",    // yellow
             ClaudeSessionStatus::WaitingInput => "\x1b[35m◐\x1b[0m", // magenta
-            ClaudeSessionStatus::Unknown => "\x1b[90m?\x1b[0m",     // gray
+            ClaudeSessionStatus::Unknown => "\x1b[90m?\x1b[0m", // gray
         }
     }
 }
@@ -100,7 +100,8 @@ pub fn capture_pane_content(pane_id: &str, lines: usize) -> Option<String> {
     let output = Command::new("tmux")
         .args([
             "capture-pane",
-            "-t", pane_id,
+            "-t",
+            pane_id,
             "-p", // Print to stdout
             "-J", // Join wrapped lines
         ])

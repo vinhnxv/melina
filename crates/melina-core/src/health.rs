@@ -4,9 +4,9 @@ use crate::ProcessInfo;
 use crate::discovery::create_process_system;
 use crate::teams::{TeamInfo, TeamMember};
 use serde::Serialize;
-use sysinfo::{System, Pid, ProcessesToUpdate, ProcessRefreshKind};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Create a lightweight System for kill/lookup operations (no CPU, single refresh).
 fn create_light_system() -> System {
@@ -139,22 +139,26 @@ pub fn check_team_health(team: &TeamInfo, sys: &System) -> TeamHealthReport {
     let owner_alive = check_team_owner_alive(team, sys);
     let now = now_epoch();
 
-    let members = team.teammates().into_iter().map(|m| {
-        let health = if !owner_alive {
-            TeammateHealth::Zombie
-        } else {
-            check_teammate_health(m, team, now)
-        };
+    let members = team
+        .teammates()
+        .into_iter()
+        .map(|m| {
+            let health = if !owner_alive {
+                TeammateHealth::Zombie
+            } else {
+                check_teammate_health(m, team, now)
+            };
 
-        let last_activity_secs = get_inbox_age(team, &m.name, now);
+            let last_activity_secs = get_inbox_age(team, &m.name, now);
 
-        TeammateHealthEntry {
-            name: m.name.clone(),
-            agent_type: m.agent_type.clone(),
-            health,
-            last_activity_secs,
-        }
-    }).collect();
+            TeammateHealthEntry {
+                name: m.name.clone(),
+                agent_type: m.agent_type.clone(),
+                health,
+                last_activity_secs,
+            }
+        })
+        .collect();
 
     TeamHealthReport {
         team_name: team.name.clone(),
@@ -165,7 +169,11 @@ pub fn check_team_health(team: &TeamInfo, sys: &System) -> TeamHealthReport {
 
 /// Check if the team's owner process is still alive.
 fn check_team_owner_alive(team: &TeamInfo, sys: &System) -> bool {
-    let session_path = team.config_dir.join("teams").join(&team.name).join(".session");
+    let session_path = team
+        .config_dir
+        .join("teams")
+        .join(&team.name)
+        .join(".session");
     if let Ok(content) = std::fs::read_to_string(&session_path) {
         if let Ok(session) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(pid_str) = session.get("owner_pid").and_then(|v| v.as_str()) {
@@ -194,7 +202,9 @@ fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> Team
     if !stuck_tasks.is_empty() {
         if let Some(age) = inbox_age {
             if age > TEAMMATE_STALE_SECS {
-                return TeammateHealth::Stuck { task_ids: stuck_tasks };
+                return TeammateHealth::Stuck {
+                    task_ids: stuck_tasks,
+                };
             }
         }
     }
@@ -211,7 +221,8 @@ fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> Team
 
 /// Get seconds since last inbox modification for a teammate.
 fn get_inbox_age(team: &TeamInfo, member_name: &str, now: u64) -> Option<u64> {
-    let inbox_path = team.config_dir
+    let inbox_path = team
+        .config_dir
         .join("teams")
         .join(&team.name)
         .join("inboxes")
@@ -229,7 +240,9 @@ fn check_teammate_tasks(team: &TeamInfo, member_name: &str) -> (usize, Vec<Strin
     if let Ok(entries) = std::fs::read_dir(&tasks_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json") && path.file_name().is_some_and(|n| n != ".lock") {
+            if path.extension().is_some_and(|e| e == "json")
+                && path.file_name().is_some_and(|n| n != ".lock")
+            {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(task) = serde_json::from_str::<serde_json::Value>(&content) {
                         let owner = task.get("owner").and_then(|v| v.as_str()).unwrap_or("");
@@ -239,7 +252,8 @@ fn check_teammate_tasks(team: &TeamInfo, member_name: &str) -> (usize, Vec<Strin
                             match status {
                                 "completed" => completed += 1,
                                 "in_progress" => {
-                                    let id = task.get("id")
+                                    let id = task
+                                        .get("id")
                                         .map(|v| v.to_string())
                                         .unwrap_or_else(|| "?".to_string());
                                     stuck.push(id);
@@ -287,14 +301,37 @@ impl ZombieEntry {
     /// Short description for display.
     pub fn label(&self) -> String {
         match self {
-            ZombieEntry::Team { name, member_count, task_count, .. } => {
-                format!("ZOMBIE TEAM: {} ({} members, {} tasks)", name, member_count, task_count)
+            ZombieEntry::Team {
+                name,
+                member_count,
+                task_count,
+                ..
+            } => {
+                format!(
+                    "ZOMBIE TEAM: {} ({} members, {} tasks)",
+                    name, member_count, task_count
+                )
             }
-            ZombieEntry::OrphanTmux { socket_name, lead_pid, pane_count, .. } => {
-                format!("ORPHAN TMUX: {} (lead:{}, {} panes)", socket_name, lead_pid, pane_count)
+            ZombieEntry::OrphanTmux {
+                socket_name,
+                lead_pid,
+                pane_count,
+                ..
+            } => {
+                format!(
+                    "ORPHAN TMUX: {} (lead:{}, {} panes)",
+                    socket_name, lead_pid, pane_count
+                )
             }
-            ZombieEntry::OrphanShell { socket_name, pane_id, shell_pid } => {
-                format!("ORPHAN SHELL: pane {} (sh:{}) in {}", pane_id, shell_pid, socket_name)
+            ZombieEntry::OrphanShell {
+                socket_name,
+                pane_id,
+                shell_pid,
+            } => {
+                format!(
+                    "ORPHAN SHELL: pane {} (sh:{}) in {}",
+                    pane_id, shell_pid, socket_name
+                )
             }
         }
     }
@@ -380,7 +417,7 @@ impl KillZombiesResult {
 /// For orphan tmux servers: kills the tmux server process.
 /// For orphan shells: kills the empty tmux pane.
 pub fn kill_zombies() -> KillZombiesResult {
-    use crate::teams::{scan_teams, scan_tmux_servers, kill_tmux_server};
+    use crate::teams::{kill_tmux_server, scan_teams, scan_tmux_servers};
 
     let sys = create_process_system();
     let teams = scan_teams();
@@ -397,7 +434,10 @@ pub fn kill_zombies() -> KillZombiesResult {
                 if !member.tmux_pane_id.is_empty() {
                     let pane_id = &member.tmux_pane_id;
                     let digits = &pane_id[1..];
-                    if !pane_id.starts_with('%') || digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+                    if !pane_id.starts_with('%')
+                        || digits.is_empty()
+                        || !digits.chars().all(|c| c.is_ascii_digit())
+                    {
                         continue;
                     }
                     let _ = std::process::Command::new("tmux")
@@ -416,12 +456,18 @@ pub fn kill_zombies() -> KillZombiesResult {
                         Ok(canonical) => {
                             if canonical.to_string_lossy().contains("/.claude") {
                                 if let Err(e) = std::fs::remove_dir_all(&canonical) {
-                                    result.errors.push(format!("rm {}: {}", canonical.display(), e));
+                                    result.errors.push(format!(
+                                        "rm {}: {}",
+                                        canonical.display(),
+                                        e
+                                    ));
                                 }
                             }
                         }
                         Err(e) => {
-                            result.errors.push(format!("canonicalize {}: {}", dir.display(), e));
+                            result
+                                .errors
+                                .push(format!("canonicalize {}: {}", dir.display(), e));
                         }
                     }
                 }
@@ -438,21 +484,29 @@ pub fn kill_zombies() -> KillZombiesResult {
             if kill_tmux_server(&srv.socket_name) {
                 result.tmux_cleaned += 1;
             } else {
-                result.errors.push(format!("failed to kill tmux server {}", srv.socket_name));
+                result
+                    .errors
+                    .push(format!("failed to kill tmux server {}", srv.socket_name));
             }
         } else {
             // Active server — kill orphan shell panes (claude exited, empty shell remains)
             for pane in &srv.panes {
                 if !pane.claude_alive && pane.agent_name.is_none() {
                     let digits = &pane.pane_id[1..];
-                    if pane.pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                    if pane.pane_id.starts_with('%')
+                        && !digits.is_empty()
+                        && digits.chars().all(|c| c.is_ascii_digit())
+                    {
                         let kill_result = std::process::Command::new("tmux")
                             .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
                             .output();
                         if kill_result.is_ok_and(|o| o.status.success()) {
                             result.shells_cleaned += 1;
                         } else {
-                            result.errors.push(format!("failed to kill orphan shell pane {} in {}", pane.pane_id, srv.socket_name));
+                            result.errors.push(format!(
+                                "failed to kill orphan shell pane {} in {}",
+                                pane.pane_id, srv.socket_name
+                            ));
                         }
                     }
                 }
@@ -487,10 +541,7 @@ pub enum ProcessLookupKind {
         agent_name: Option<String>,
     },
     /// A regular OS process.
-    Process {
-        name: String,
-        cmd_preview: String,
-    },
+    Process { name: String, cmd_preview: String },
     /// PID not found.
     NotFound,
 }
@@ -509,7 +560,10 @@ pub fn lookup_process(pid: u32) -> ProcessLookup {
                 let label = pane.agent_name.as_deref().unwrap_or("shell").to_string();
                 return ProcessLookup {
                     pid,
-                    label: format!("{} (tmux pane {} in {})", label, pane.pane_id, srv.socket_name),
+                    label: format!(
+                        "{} (tmux pane {} in {})",
+                        label, pane.pane_id, srv.socket_name
+                    ),
                     kind: ProcessLookupKind::TmuxPane {
                         socket_name: srv.socket_name.clone(),
                         pane_id: pane.pane_id.clone(),
@@ -525,7 +579,9 @@ pub fn lookup_process(pid: u32) -> ProcessLookup {
     match sys.process(Pid::from_u32(pid)) {
         Some(proc_) => {
             let name = proc_.name().to_string_lossy().to_string();
-            let cmd_str: String = proc_.cmd().iter()
+            let cmd_str: String = proc_
+                .cmd()
+                .iter()
                 .map(|s| s.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -534,7 +590,8 @@ pub fn lookup_process(pid: u32) -> ProcessLookup {
                 || cmd_str.contains("--agent-id")
                 || name.contains("claude");
 
-            let agent_name = cmd_str.split("--agent-name ")
+            let agent_name = cmd_str
+                .split("--agent-name ")
                 .nth(1)
                 .and_then(|s| s.split_whitespace().next())
                 .unwrap_or(&name)
@@ -571,18 +628,26 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
     if !lookup.is_claude {
         return match lookup.kind {
             ProcessLookupKind::NotFound => Err(format!("PID {} not found", pid)),
-            ProcessLookupKind::Process { name, .. } =>
-                Err(format!("PID {} ({}) is not a Claude process", pid, name)),
+            ProcessLookupKind::Process { name, .. } => {
+                Err(format!("PID {} ({}) is not a Claude process", pid, name))
+            }
             _ => Err(format!("PID {} is not a Claude process", pid)),
         };
     }
 
     match lookup.kind {
-        ProcessLookupKind::TmuxPane { socket_name, pane_id, agent_name } => {
+        ProcessLookupKind::TmuxPane {
+            socket_name,
+            pane_id,
+            agent_name,
+        } => {
             let label = agent_name.as_deref().unwrap_or("shell");
             // Kill the tmux pane
             let digits = &pane_id[1..];
-            if pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            if pane_id.starts_with('%')
+                && !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit())
+            {
                 let result = std::process::Command::new("tmux")
                     .args(["-L", &socket_name, "kill-pane", "-t", &pane_id])
                     .output();
@@ -634,4 +699,228 @@ fn file_mtime_epoch(path: &Path) -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|d| d.as_secs())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Health enum tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_health_label() {
+        assert_eq!(Health::Ok.label(), "OK");
+        assert_eq!(Health::Zombie.label(), "ZOMBIE");
+        assert_eq!(Health::Orphan.label(), "ORPHAN");
+        assert_eq!(Health::Stale.label(), "STALE");
+    }
+
+    #[test]
+    fn test_health_is_healthy() {
+        assert!(Health::Ok.is_healthy());
+        assert!(!Health::Zombie.is_healthy());
+        assert!(!Health::Orphan.is_healthy());
+        assert!(!Health::Stale.is_healthy());
+    }
+
+    #[test]
+    fn test_health_display() {
+        assert_eq!(format!("{}", Health::Ok), "OK");
+        assert_eq!(format!("{}", Health::Zombie), "ZOMBIE");
+        assert_eq!(format!("{}", Health::Orphan), "ORPHAN");
+        assert_eq!(format!("{}", Health::Stale), "STALE");
+    }
+
+    // ── TeammateHealth enum tests ─────────────────────────────────
+
+    #[test]
+    fn test_teammate_health_label() {
+        assert_eq!(TeammateHealth::Active.label(), "ACTIVE");
+        assert_eq!(TeammateHealth::Completed.label(), "DONE");
+        assert_eq!(TeammateHealth::Zombie.label(), "ZOMBIE");
+        assert_eq!(TeammateHealth::Stale { idle_secs: 100 }.label(), "STALE");
+        assert_eq!(
+            TeammateHealth::Stuck {
+                task_ids: vec!["1".to_string()]
+            }
+            .label(),
+            "STUCK"
+        );
+    }
+
+    #[test]
+    fn test_teammate_health_is_healthy() {
+        assert!(TeammateHealth::Active.is_healthy());
+        assert!(TeammateHealth::Completed.is_healthy());
+        assert!(!TeammateHealth::Zombie.is_healthy());
+        assert!(!TeammateHealth::Stale { idle_secs: 100 }.is_healthy());
+        assert!(
+            !TeammateHealth::Stuck {
+                task_ids: vec!["1".to_string()]
+            }
+            .is_healthy()
+        );
+    }
+
+    #[test]
+    fn test_teammate_health_display_stale() {
+        let stale = TeammateHealth::Stale { idle_secs: 300 };
+        assert_eq!(format!("{}", stale), "STALE (5m idle)");
+
+        let stale_zero = TeammateHealth::Stale { idle_secs: 0 };
+        assert_eq!(format!("{}", stale_zero), "STALE (0m idle)");
+
+        let stale_large = TeammateHealth::Stale { idle_secs: 7200 };
+        assert_eq!(format!("{}", stale_large), "STALE (120m idle)");
+    }
+
+    #[test]
+    fn test_teammate_health_display_stuck() {
+        let stuck_single = TeammateHealth::Stuck {
+            task_ids: vec!["42".to_string()],
+        };
+        assert_eq!(format!("{}", stuck_single), "STUCK (tasks: 42)");
+
+        let stuck_multiple = TeammateHealth::Stuck {
+            task_ids: vec!["1".to_string(), "2".to_string(), "3".to_string()],
+        };
+        assert_eq!(format!("{}", stuck_multiple), "STUCK (tasks: 1,2,3)");
+
+        let stuck_empty = TeammateHealth::Stuck { task_ids: vec![] };
+        assert_eq!(format!("{}", stuck_empty), "STUCK (tasks: )");
+    }
+
+    #[test]
+    fn test_teammate_health_display_other_variants() {
+        assert_eq!(format!("{}", TeammateHealth::Active), "ACTIVE");
+        assert_eq!(format!("{}", TeammateHealth::Completed), "DONE");
+        assert_eq!(format!("{}", TeammateHealth::Zombie), "ZOMBIE");
+    }
+
+    // ── ZombieEntry tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_zombie_entry_label_team() {
+        let team = ZombieEntry::Team {
+            name: "my-team".to_string(),
+            config_dir: std::path::PathBuf::from("/tmp/.claude"),
+            member_count: 3,
+            task_count: 5,
+        };
+        assert_eq!(team.label(), "ZOMBIE TEAM: my-team (3 members, 5 tasks)");
+    }
+
+    #[test]
+    fn test_zombie_entry_label_orphan_tmux() {
+        let orphan_tmux = ZombieEntry::OrphanTmux {
+            socket_name: "claude-swarm".to_string(),
+            lead_pid: 12345,
+            pane_count: 4,
+            server_pid: Some(67890),
+        };
+        assert_eq!(
+            orphan_tmux.label(),
+            "ORPHAN TMUX: claude-swarm (lead:12345, 4 panes)"
+        );
+
+        let orphan_tmux_no_server = ZombieEntry::OrphanTmux {
+            socket_name: "test-socket".to_string(),
+            lead_pid: 999,
+            pane_count: 1,
+            server_pid: None,
+        };
+        assert_eq!(
+            orphan_tmux_no_server.label(),
+            "ORPHAN TMUX: test-socket (lead:999, 1 panes)"
+        );
+    }
+
+    #[test]
+    fn test_zombie_entry_label_orphan_shell() {
+        let orphan_shell = ZombieEntry::OrphanShell {
+            socket_name: "claude-swarm".to_string(),
+            pane_id: "%0".to_string(),
+            shell_pid: 54321,
+        };
+        assert_eq!(
+            orphan_shell.label(),
+            "ORPHAN SHELL: pane %0 (sh:54321) in claude-swarm"
+        );
+    }
+
+    #[test]
+    fn test_zombie_entry_reason() {
+        let team = ZombieEntry::Team {
+            name: "test".to_string(),
+            config_dir: std::path::PathBuf::from("/tmp"),
+            member_count: 1,
+            task_count: 0,
+        };
+        assert_eq!(team.reason(), "owner process is dead");
+
+        let orphan_tmux = ZombieEntry::OrphanTmux {
+            socket_name: "test".to_string(),
+            lead_pid: 1,
+            pane_count: 1,
+            server_pid: None,
+        };
+        assert_eq!(orphan_tmux.reason(), "lead process is dead");
+
+        let orphan_shell = ZombieEntry::OrphanShell {
+            socket_name: "test".to_string(),
+            pane_id: "%0".to_string(),
+            shell_pid: 1,
+        };
+        assert_eq!(
+            orphan_shell.reason(),
+            "claude process exited, empty shell remains"
+        );
+    }
+
+    // ── KillZombiesResult tests ─────────────────────────────────────
+
+    #[test]
+    fn test_kill_zombies_result_total() {
+        // All zeros
+        let result = KillZombiesResult::default();
+        assert_eq!(result.total(), 0);
+
+        // Only teams cleaned
+        let result = KillZombiesResult {
+            teams_cleaned: 2,
+            tmux_cleaned: 0,
+            shells_cleaned: 0,
+            errors: vec![],
+        };
+        assert_eq!(result.total(), 2);
+
+        // Only tmux cleaned
+        let result = KillZombiesResult {
+            teams_cleaned: 0,
+            tmux_cleaned: 3,
+            shells_cleaned: 0,
+            errors: vec![],
+        };
+        assert_eq!(result.total(), 3);
+
+        // Only shells cleaned
+        let result = KillZombiesResult {
+            teams_cleaned: 0,
+            tmux_cleaned: 0,
+            shells_cleaned: 5,
+            errors: vec![],
+        };
+        assert_eq!(result.total(), 5);
+
+        // Mixed counts
+        let result = KillZombiesResult {
+            teams_cleaned: 2,
+            tmux_cleaned: 3,
+            shells_cleaned: 5,
+            errors: vec!["some error".to_string()],
+        };
+        assert_eq!(result.total(), 10);
+    }
 }

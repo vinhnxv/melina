@@ -34,7 +34,9 @@ pub fn classify_child(proc: &ProcessInfo) -> ChildKind {
 
     // Teammate — another `claude` process whose parent is also claude
     if proc.name.to_lowercase().contains("claude") && !cmd_str.contains("server.py") {
-        return ChildKind::Teammate { name: extract_teammate_name(&cmd_str) };
+        return ChildKind::Teammate {
+            name: extract_teammate_name(&cmd_str),
+        };
     }
 
     // Hook scripts
@@ -71,4 +73,143 @@ fn extract_teammate_name(cmd: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Helper to create a ProcessInfo for testing.
+    fn make_process_info(pid: u32, name: &str, cmd: Vec<&str>) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid: 1,
+            name: name.to_string(),
+            cmd: cmd.into_iter().map(String::from).collect(),
+            cwd: PathBuf::from("/tmp"),
+            memory_bytes: 0,
+            cpu_percent: 0.0,
+            start_time: 0,
+            status: "running".to_string(),
+        }
+    }
+
+    // ========== classify_child() tests ==========
+
+    #[test]
+    fn test_classify_mcp_server() {
+        // Test "server.py" in command
+        let proc = make_process_info(
+            100,
+            "python",
+            vec!["/some/path/scripts/echo-search/server.py"],
+        );
+        let result = classify_child(&proc);
+        assert!(matches!(result, ChildKind::McpServer { .. }));
+        if let ChildKind::McpServer { server_name } = result {
+            assert_eq!(server_name, "echo-search");
+        }
+
+        // Test "/mcp/" in command
+        let proc = make_process_info(101, "node", vec!["/mcp/some-server"]);
+        assert!(matches!(classify_child(&proc), ChildKind::McpServer { .. }));
+
+        // Test "mcp-server" in command
+        let proc = make_process_info(102, "node", vec!["mcp-server-foo"]);
+        assert!(matches!(classify_child(&proc), ChildKind::McpServer { .. }));
+    }
+
+    #[test]
+    fn test_classify_teammate() {
+        let proc = make_process_info(200, "claude", vec!["claude", "--some-flag"]);
+        let result = classify_child(&proc);
+        assert!(matches!(result, ChildKind::Teammate { .. }));
+
+        // Test case insensitivity
+        let proc = make_process_info(201, "Claude", vec!["Claude"]);
+        assert!(matches!(classify_child(&proc), ChildKind::Teammate { .. }));
+    }
+
+    #[test]
+    fn test_classify_hook_script() {
+        // Test "hooks/" in command
+        let proc = make_process_info(300, "sh", vec!["/hooks/pre-tool.sh"]);
+        assert!(matches!(classify_child(&proc), ChildKind::HookScript));
+
+        // Test "hook" in command
+        let proc = make_process_info(301, "python", vec!["/some/hook-script.py"]);
+        assert!(matches!(classify_child(&proc), ChildKind::HookScript));
+    }
+
+    #[test]
+    fn test_classify_bash_tool() {
+        // Test "sh" name
+        let proc = make_process_info(400, "sh", vec!["sh", "-c", "echo test"]);
+        assert!(matches!(classify_child(&proc), ChildKind::BashTool));
+
+        // Test "bash" name
+        let proc = make_process_info(401, "bash", vec!["bash"]);
+        assert!(matches!(classify_child(&proc), ChildKind::BashTool));
+
+        // Test "zsh" name
+        let proc = make_process_info(402, "zsh", vec!["zsh"]);
+        assert!(matches!(classify_child(&proc), ChildKind::BashTool));
+    }
+
+    #[test]
+    fn test_classify_unknown() {
+        // Process that doesn't match any category
+        let proc = make_process_info(500, "some-random-process", vec!["--flag"]);
+        assert!(matches!(classify_child(&proc), ChildKind::Unknown));
+
+        // Another unknown
+        let proc = make_process_info(501, "vim", vec!["vim", "file.txt"]);
+        assert!(matches!(classify_child(&proc), ChildKind::Unknown));
+    }
+
+    // ========== extract_mcp_name() tests ==========
+
+    #[test]
+    fn test_extract_mcp_name_from_scripts_path() {
+        let cmd = "/some/path/scripts/echo-search/server.py --port 8080";
+        assert_eq!(extract_mcp_name(cmd), "echo-search");
+
+        let cmd = "python /Users/test/scripts/my-mcp/server.py";
+        assert_eq!(extract_mcp_name(cmd), "my-mcp");
+    }
+
+    #[test]
+    fn test_extract_mcp_name_fallback() {
+        // No "scripts/" in path
+        let cmd = "python server.py";
+        assert_eq!(extract_mcp_name(cmd), "unknown-mcp");
+
+        // Path with mcp-server but no scripts/
+        let cmd = "/usr/local/bin/mcp-server-foo";
+        assert_eq!(extract_mcp_name(cmd), "unknown-mcp");
+    }
+
+    // ========== extract_teammate_name() tests ==========
+
+    #[test]
+    fn test_extract_teammate_name_long_flag() {
+        let cmd = "claude --name teammate1 --other-flag";
+        assert_eq!(extract_teammate_name(cmd), Some("teammate1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_teammate_name_short_flag() {
+        let cmd = "claude -n teammate2 --other-flag";
+        assert_eq!(extract_teammate_name(cmd), Some("teammate2".to_string()));
+    }
+
+    #[test]
+    fn test_extract_teammate_name_no_flag() {
+        let cmd = "claude --some-other-flag value";
+        assert_eq!(extract_teammate_name(cmd), None);
+
+        let cmd = "claude";
+        assert_eq!(extract_teammate_name(cmd), None);
+    }
 }

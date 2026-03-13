@@ -4,18 +4,25 @@
 //! builds parent-child trees, classifies children (MCP server,
 //! teammate, hook, bash tool), and detects orphans.
 
-mod discovery;
 mod classify;
+mod discovery;
 mod git;
 mod health;
 mod status;
-mod tree;
 mod teams;
+mod tree;
 
-pub use discovery::{scan, create_process_system, ProcessInfo};
 pub use classify::{ChildKind, classify_child};
+pub use discovery::{ProcessInfo, create_process_system, scan};
 pub use git::GitContext;
-pub use health::{Health, check_health, TeammateHealth, TeammateHealthEntry, TeamHealthReport, check_team_health, ZombieEntry, scan_zombies, KillZombiesResult, kill_zombies, ProcessLookup, ProcessLookupKind, lookup_process, kill_process};
-pub use status::{ClaudeSessionStatus, detect_status, detect_pane_status};
-pub use tree::{SessionTree, ChildProcess, HostTmux, build_trees};
-pub use teams::{TeamInfo, TeamMember, scan_teams, resolve_tmux_pids, TmuxServer, TmuxPane, PaneStatus, scan_tmux_servers, kill_tmux_server};
+pub use health::{
+    Health, KillZombiesResult, ProcessLookup, ProcessLookupKind, TeamHealthReport, TeammateHealth,
+    TeammateHealthEntry, ZombieEntry, check_health, check_team_health, kill_process, kill_zombies,
+    lookup_process, scan_zombies,
+};
+pub use status::{ClaudeSessionStatus, detect_pane_status, detect_status};
+pub use teams::{
+    PaneStatus, TeamInfo, TeamMember, TmuxPane, TmuxServer, kill_tmux_server, resolve_tmux_pids,
+    scan_teams, scan_tmux_servers,
+};
+pub use tree::{ChildProcess, HostTmux, SessionTree, build_trees};

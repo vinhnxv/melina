@@ -594,3 +594,146 @@ fn format_uptime(start_time: u64) -> String {
         format!("{}m", mins)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== format_bytes tests ====================
+
+    #[test]
+    fn test_format_bytes_bytes() {
+        // Values < 1024 should be "NB" format
+        assert_eq!(format_bytes(0), "0B");
+        assert_eq!(format_bytes(1), "1B");
+        assert_eq!(format_bytes(512), "512B");
+        assert_eq!(format_bytes(1023), "1023B");
+    }
+
+    #[test]
+    fn test_format_bytes_kb() {
+        // Values from 1024 to 1MB-1 should be "N.KB" format
+        assert_eq!(format_bytes(1024), "1.0KB");
+        assert_eq!(format_bytes(1536), "1.5KB");
+        assert_eq!(format_bytes(10_240), "10.0KB");
+        assert_eq!(format_bytes(1_048_575), "1024.0KB");
+    }
+
+    #[test]
+    fn test_format_bytes_mb() {
+        // Values from 1MB to 1GB-1 should be "N.MB" format
+        assert_eq!(format_bytes(1_048_576), "1.0MB");
+        assert_eq!(format_bytes(10_485_760), "10.0MB");
+        assert_eq!(format_bytes(1_073_741_823), "1024.0MB");
+    }
+
+    #[test]
+    fn test_format_bytes_gb() {
+        // Values >= 1GB should be "N.GB" format
+        assert_eq!(format_bytes(1_073_741_824), "1.0GB");
+        assert_eq!(format_bytes(10_737_418_240), "10.0GB");
+        assert_eq!(format_bytes(100_000_000_000), "93.1GB");
+    }
+
+    #[test]
+    fn test_format_bytes_exact_kb() {
+        // 1024 bytes should be "1.0KB"
+        assert_eq!(format_bytes(1024), "1.0KB");
+    }
+
+    // ==================== format_timestamp tests ====================
+
+    #[test]
+    fn test_format_timestamp_valid() {
+        // Valid epoch should produce "YYYY-MM-DD HH:MM:SS" format
+        let result = format_timestamp(1_600_000_000); // Sep 13, 2020
+        // Check format: YYYY-MM-DD HH:MM:SS (20 chars)
+        assert_eq!(result.len(), 19);
+        assert!(result.contains('-')); // Date separator
+        assert!(result.contains(':')); // Time separator
+        assert!(result.contains(' ')); // DateTime separator
+    }
+
+    #[test]
+    fn test_format_timestamp_zero() {
+        // Epoch 0 should produce some date (1970 or "unknown")
+        let result = format_timestamp(0);
+        // Should either be a valid date string or "unknown"
+        assert!(result == "unknown" || result.len() == 19);
+    }
+
+    // ==================== format_uptime tests ====================
+
+    #[test]
+    fn test_format_uptime_minutes_only() {
+        // Uptime < 1 hour should be "Nm" format
+        // We test by providing a start_time 30 minutes ago
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let start = now - 30 * 60; // 30 minutes ago
+        let result = format_uptime(start);
+        assert!(result.ends_with('m'), "Expected 'Nm' format, got: {}", result);
+        assert!(!result.contains('h'), "Should not contain hours, got: {}", result);
+    }
+
+    #[test]
+    fn test_format_uptime_hours_and_minutes() {
+        // Uptime >= 1 hour should be "NhNm" format
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let start = now - (2 * 3600 + 30 * 60); // 2h30m ago
+        let result = format_uptime(start);
+        assert!(result.contains('h'), "Expected 'NhNm' format, got: {}", result);
+        assert!(result.contains('m'), "Expected 'NhNm' format, got: {}", result);
+    }
+
+    #[test]
+    fn test_format_uptime_zero() {
+        // Start time of 0 (or very small) should still work
+        // Using a fixed small value that would result in many hours
+        let result = format_uptime(0);
+        // With start_time 0, uptime will be huge (many hours)
+        // Just verify it returns a valid string
+        assert!(!result.is_empty());
+    }
+
+    // ==================== truncate_path tests ====================
+
+    #[test]
+    fn test_truncate_path_short() {
+        // Path under max_len should be unchanged
+        let path = "/home/user/project";
+        let result = truncate_path(path, 50);
+        assert_eq!(result, path);
+    }
+
+    #[test]
+    fn test_truncate_path_long() {
+        // Path over max_len should have "…" prefix
+        let path = "/home/user/projects/very/long/directory/structure/here";
+        let result = truncate_path(path, 30);
+        assert!(result.starts_with('…'), "Expected '…' prefix, got: {}", result);
+        assert!(result.len() <= 30, "Expected length <= 30, got: {} ({})", result.len(), result);
+    }
+
+    #[test]
+    fn test_truncate_path_exact() {
+        // Path exactly max_len should be unchanged
+        let path = "/home/user/project"; // 19 chars
+        let result = truncate_path(path, 19);
+        assert_eq!(result, path);
+    }
+
+    #[test]
+    fn test_truncate_path_very_long() {
+        // Very long path should truncate to max_len
+        let path = "/home/user/projects/some/very/long/directory/structure/that/exceeds/the/maximum/length/substantially/with/many/nested/folders";
+        let result = truncate_path(path, 40);
+        assert!(result.starts_with('…'), "Expected '…' prefix, got: {}", result);
+        assert!(result.len() <= 40, "Expected length <= 40, got: {} ({})", result.len(), result);
+    }
+}
