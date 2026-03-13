@@ -540,8 +540,17 @@ fn query_tmux_panes_from_snapshot(
                 }
             };
 
-        let (last_line, status, team_exists) = if skip_status {
-            // Quick mode: skip capture-pane, jsonl, and filesystem checks
+        // team_exists check is cheap (filesystem stat) — always do it
+        let team_exists = team_name.as_ref().map_or(true, |tn| {
+            let dirs = match cache {
+                Some(c) => c.dirs().to_vec(),
+                None => discover_config_dirs(),
+            };
+            dirs.iter().any(|d| d.join("teams").join(tn).is_dir())
+        });
+
+        let (last_line, status) = if skip_status {
+            // Quick mode: skip capture-pane and jsonl checks
             let quick_status = if !claude_alive {
                 PaneStatus::Shell
             } else if cpu_percent < 0.5 {
@@ -549,21 +558,14 @@ fn query_tmux_panes_from_snapshot(
             } else {
                 PaneStatus::Active
             };
-            (None, quick_status, true)
+            (None, quick_status)
         } else {
             let line = capture_pane_last_line(socket, &pane_id);
             let st = derive_pane_status(
                 claude_alive, cpu_percent, line.as_deref(),
                 team_name.as_deref(), agent_name.as_deref(), cache, shutdown_agents,
             );
-            let exists = team_name.as_ref().map_or(true, |tn| {
-                let dirs = match cache {
-                    Some(c) => c.dirs().to_vec(),
-                    None => discover_config_dirs(),
-                };
-                dirs.iter().any(|d| d.join("teams").join(tn).is_dir())
-            });
-            (line, st, exists)
+            (line, st)
         };
 
         Some(TmuxPane {
