@@ -123,9 +123,12 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     }
 
     // Add in-process teammates discovered from task owners but missing from config.json
+    // Use fuzzy match: skip if owner is a prefix/substring of any known member name
+    // (e.g. task owner "codex-phase-handler" matches member "codex-phase-handler-sv")
     let known_names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
     for owner in &task_owners {
-        if !known_names.contains(owner) {
+        let already_known = known_names.iter().any(|n| n == owner || n.starts_with(owner) || owner.starts_with(n));
+        if !already_known {
             members.push(TeamMember {
                 name: owner.clone(),
                 agent_type: "in-process".to_string(),
@@ -154,7 +157,8 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
 ///
 /// Claude Code uses custom tmux sockets named `claude-swarm-{lead_pid}`.
 /// We find these sockets via `ps`, then query each for pane→PID mapping.
-pub fn resolve_tmux_pids(teams: &mut [TeamInfo]) {
+/// Accepts a pre-created `System` to avoid redundant process table loads.
+pub fn resolve_tmux_pids(teams: &mut [TeamInfo], sys: &System) {
     let pane_map = build_tmux_pane_map();
     if pane_map.is_empty() {
         return;
@@ -179,12 +183,6 @@ pub fn resolve_tmux_pids(teams: &mut [TeamInfo]) {
     if pids_to_lookup.is_empty() {
         return;
     }
-
-    // Query sysinfo for process details (double-refresh for accurate CPU)
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_all();
 
     // Populate resource info from sysinfo.
     // tmux pane_pid is typically a shell (zsh/bash). The actual Claude process
@@ -381,13 +379,10 @@ impl TmuxServer {
 }
 
 /// Scan all `tmux -L claude-swarm` servers and check if their lead is alive.
-pub fn scan_tmux_servers() -> Vec<TmuxServer> {
+/// Accepts a pre-created `System` to avoid redundant process table loads.
+/// When `skip_status` is true, skips expensive capture-pane/jsonl for pane status detection.
+pub fn scan_tmux_servers(sys: &System, skip_status: bool) -> Vec<TmuxServer> {
     use std::process::Command;
-
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_all();
 
     // Find tmux server processes: `tmux -L claude-swarm-NNNNN ...`
     let ps_output = Command::new("ps")
@@ -441,7 +436,7 @@ pub fn scan_tmux_servers() -> Vec<TmuxServer> {
             let start_time = server_proc.map(|p| p.start_time()).unwrap_or(0);
 
             // Query panes
-            let panes = query_tmux_panes(&socket_name, &sys);
+            let panes = query_tmux_panes(&socket_name, sys, skip_status);
 
             servers.push(TmuxServer {
                 socket_name,
@@ -459,7 +454,8 @@ pub fn scan_tmux_servers() -> Vec<TmuxServer> {
 }
 
 /// Query panes from a tmux socket and check for claude child processes.
-fn query_tmux_panes(socket: &str, sys: &System) -> Vec<TmuxPane> {
+/// When `skip_status` is true, skips capture-pane and jsonl scanning for status detection.
+fn query_tmux_panes(socket: &str, sys: &System, skip_status: bool) -> Vec<TmuxPane> {
     use std::process::Command;
 
     let output = Command::new("tmux")
@@ -509,16 +505,27 @@ fn query_tmux_panes(socket: &str, sys: &System) -> Vec<TmuxPane> {
                 None => (None, false, None, None, None, 0, 0.0, 0),
             };
 
-        let last_line = capture_pane_last_line(socket, &pane_id);
-
-        let status = derive_pane_status(
-            claude_alive, cpu_percent, last_line.as_deref(),
-            team_name.as_deref(), agent_name.as_deref(),
-        );
-
-        let team_exists = team_name.as_ref().map_or(true, |tn| {
-            discover_config_dirs().iter().any(|d| d.join("teams").join(tn).is_dir())
-        });
+        let (last_line, status, team_exists) = if skip_status {
+            // Quick mode: skip capture-pane, jsonl, and filesystem checks
+            let quick_status = if !claude_alive {
+                PaneStatus::Shell
+            } else if cpu_percent < 0.5 {
+                PaneStatus::Idle
+            } else {
+                PaneStatus::Active
+            };
+            (None, quick_status, true)
+        } else {
+            let line = capture_pane_last_line(socket, &pane_id);
+            let st = derive_pane_status(
+                claude_alive, cpu_percent, line.as_deref(),
+                team_name.as_deref(), agent_name.as_deref(),
+            );
+            let exists = team_name.as_ref().map_or(true, |tn| {
+                discover_config_dirs().iter().any(|d| d.join("teams").join(tn).is_dir())
+            });
+            (line, st, exists)
+        };
 
         Some(TmuxPane {
             pane_id, shell_pid, claude_pid, claude_alive,

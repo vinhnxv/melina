@@ -211,9 +211,10 @@ fn detect_host_tmux(
 }
 
 /// Build session trees from a flat list of processes.
-pub fn build_trees(processes: Vec<ProcessInfo>) -> Vec<SessionTree> {
-    // Create System instance once for all health checks (expensive operation)
-    let sys = System::new_all();
+/// Accepts a pre-created `System` to avoid redundant process table loads.
+/// When `skip_status` is true, skips expensive capture-pane/jsonl status detection
+/// and sets `claude_status` to `Unknown` (caller should merge from cache).
+pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool) -> Vec<SessionTree> {
     let by_pid: HashMap<u32, &ProcessInfo> = processes.iter().map(|p| (p.pid, p)).collect();
 
     // Query host tmux panes once for all sessions
@@ -232,7 +233,7 @@ pub fn build_trees(processes: Vec<ProcessInfo>) -> Vec<SessionTree> {
 
     // Read all teams once and resolve tmux PIDs
     let mut all_teams = scan_teams();
-    resolve_tmux_pids(&mut all_teams);
+    resolve_tmux_pids(&mut all_teams, sys);
 
     let mut trees = Vec::new();
 
@@ -271,8 +272,17 @@ pub fn build_trees(processes: Vec<ProcessInfo>) -> Vec<SessionTree> {
         // Detect if running inside a user tmux session
         let host_tmux = detect_host_tmux(root, &tmux_panes, &sys);
 
-        // Detect Claude session status: prefer tmux pane content, fallback to CPU
-        let claude_status = if let Some(ref tmux) = host_tmux {
+        // Detect Claude session status: skip expensive capture-pane if requested
+        let claude_status = if skip_status {
+            // CPU-based heuristic only (cheap)
+            let total_cpu: f32 = root.cpu_percent
+                + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            if total_cpu > 0.5 {
+                ClaudeSessionStatus::Working
+            } else {
+                ClaudeSessionStatus::Unknown
+            }
+        } else if let Some(ref tmux) = host_tmux {
             detect_pane_status(&tmux.pane_id)
         } else {
             // No tmux pane — fallback to CPU-based heuristic
@@ -285,11 +295,11 @@ pub fn build_trees(processes: Vec<ProcessInfo>) -> Vec<SessionTree> {
             }
         };
 
-        // Detect git context from working directory
-        let git_context = if !root.cwd.as_os_str().is_empty() {
-            GitContext::detect(&root.cwd)
-        } else {
+        // Detect git context: skip on quick refresh (rarely changes)
+        let git_context = if skip_status || root.cwd.as_os_str().is_empty() {
             None
+        } else {
+            GitContext::detect(&root.cwd)
         };
 
         trees.push(SessionTree {

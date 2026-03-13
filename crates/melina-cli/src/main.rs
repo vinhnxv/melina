@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use melina_core::{scan, build_trees, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, ChildKind, TeammateHealth, PaneStatus};
-use sysinfo::System;
+use melina_core::{scan, build_trees, create_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, ChildKind, TeammateHealth, PaneStatus};
+use sysinfo::Pid;
 
 #[derive(Parser)]
 #[command(name = "melina", about = "Claude Code process monitor")]
@@ -58,10 +58,10 @@ fn main() -> Result<()> {
 }
 
 fn render(cli: &Cli) -> Result<()> {
-    // Create System instance once for all health checks (expensive operation)
-    let sys = System::new_all();
-    let processes = scan();
-    let trees = build_trees(processes);
+    // Create System instance once — only loads processes (not disks/networks/components)
+    let sys = create_process_system();
+    let processes = scan(&sys);
+    let trees = build_trees(processes, &sys, false);
 
     if cli.json {
         let output = if cli.teams {
@@ -236,7 +236,7 @@ fn render(cli: &Cli) -> Result<()> {
     }
 
     // Show tmux servers (claude-swarm)
-    let tmux_servers = scan_tmux_servers();
+    let tmux_servers = scan_tmux_servers(&sys, false);
     if !tmux_servers.is_empty() {
         println!();
         println!("╔═══════════════════════════════════════════════════════════╗");
@@ -318,13 +318,10 @@ fn render(cli: &Cli) -> Result<()> {
 }
 
 fn kill_pids(pids: &[u32]) -> Result<()> {
-    use sysinfo::{System, Pid};
-
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    let sys = create_process_system();
 
     // Build tmux pane map to find which pane a process belongs to
-    let tmux_servers = scan_tmux_servers();
+    let tmux_servers = scan_tmux_servers(&sys, true);
 
     for &pid in pids {
         let sysinfo_pid = Pid::from_u32(pid);
@@ -415,7 +412,7 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
 }
 
 fn kill_zombies() -> Result<()> {
-    let sys = System::new_all();
+    let sys = create_process_system();
     let teams = scan_teams();
     let mut cleaned = 0;
 
@@ -486,9 +483,10 @@ fn kill_zombies() -> Result<()> {
         }
     }
 
-    // Also kill orphan tmux servers
-    let tmux_servers = scan_tmux_servers();
+    // Also kill orphan tmux servers and orphan shell panes
+    let tmux_servers = scan_tmux_servers(&sys, true);
     let mut tmux_cleaned = 0;
+    let mut shells_cleaned = 0;
     for srv in &tmux_servers {
         if srv.is_orphan() {
             println!("\x1b[31m✗\x1b[0m Orphan tmux server: {} (lead {} dead, {} panes)",
@@ -499,17 +497,40 @@ fn kill_zombies() -> Result<()> {
             } else {
                 println!("  \x1b[33m!\x1b[0m failed to kill tmux server");
             }
+        } else {
+            // Active server — kill orphan shell panes
+            for pane in &srv.panes {
+                if !pane.claude_alive && pane.agent_name.is_none() {
+                    println!("\x1b[90m·\x1b[0m Orphan shell: pane {} (sh:{}) in {}",
+                        pane.pane_id, pane.shell_pid, srv.socket_name);
+                    let digits = &pane.pane_id[1..];
+                    if pane.pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                        let result = std::process::Command::new("tmux")
+                            .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
+                            .output();
+                        if result.is_ok_and(|o| o.status.success()) {
+                            println!("  \x1b[32m✓\x1b[0m killed orphan shell pane");
+                            shells_cleaned += 1;
+                        } else {
+                            println!("  \x1b[33m!\x1b[0m failed to kill shell pane");
+                        }
+                    }
+                }
+            }
         }
     }
 
-    if cleaned == 0 && tmux_cleaned == 0 {
-        println!("No zombie teams or orphan tmux servers found. All clean.");
+    if cleaned == 0 && tmux_cleaned == 0 && shells_cleaned == 0 {
+        println!("No zombie teams, orphan servers, or orphan shells found. All clean.");
     } else {
         if cleaned > 0 {
             println!("\nCleaned up {} zombie team(s).", cleaned);
         }
         if tmux_cleaned > 0 {
             println!("Killed {} orphan tmux server(s).", tmux_cleaned);
+        }
+        if shells_cleaned > 0 {
+            println!("Killed {} orphan shell pane(s).", shells_cleaned);
         }
     }
 
