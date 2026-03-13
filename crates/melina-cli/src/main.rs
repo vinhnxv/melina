@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use melina_core::{scan, build_trees, create_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, ChildKind, TeammateHealth, PaneStatus};
-use sysinfo::Pid;
+use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, ChildKind, TeammateHealth, PaneStatus};
+use sysinfo::{Pid, System};
 
 #[derive(Parser)]
 #[command(name = "melina", about = "Claude Code process monitor")]
@@ -45,9 +45,10 @@ fn main() -> Result<()> {
     }
 
     if let Some(interval) = cli.watch {
+        let mut sys = create_process_system();
         loop {
             print!("\x1B[2J\x1B[H");
-            render(&cli)?;
+            render_with_sys(&cli, &mut sys)?;
             std::thread::sleep(std::time::Duration::from_secs(interval));
         }
     } else {
@@ -58,9 +59,13 @@ fn main() -> Result<()> {
 }
 
 fn render(cli: &Cli) -> Result<()> {
-    // Create System instance once — only loads processes (not disks/networks/components)
-    let sys = create_process_system();
-    let processes = scan(&sys);
+    let mut sys = create_process_system();
+    render_with_sys(cli, &mut sys)
+}
+
+fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
+    refresh_process_system(sys);
+    let processes = scan(sys);
     let trees = build_trees(processes, &sys, false);
 
     if cli.json {

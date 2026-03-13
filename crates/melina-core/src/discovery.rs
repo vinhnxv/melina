@@ -76,6 +76,12 @@ pub fn create_process_system() -> System {
     sys
 }
 
+/// Lightweight refresh for an existing System — no allocations, no sleep.
+/// Call this for subsequent ticks after `create_process_system()`.
+pub fn refresh_process_system(sys: &mut System) {
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+}
+
 /// Scan all processes and return Claude-related ones.
 /// Uses a pre-created `System` to avoid redundant allocations.
 pub fn scan(sys: &System) -> Vec<ProcessInfo> {

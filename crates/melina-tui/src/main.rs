@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees, create_process_system, check_team_health, scan_tmux_servers, scan_zombies, kill_zombies, kill_process, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_cached, scan_zombies, kill_zombies, kill_process, ConfigDirCache, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -23,7 +23,8 @@ fn main() -> Result<()> {
     let status_interval = Duration::from_secs(10);
     let mut last_tick = Instant::now();
     let mut last_status_refresh = Instant::now();
-    let (mut trees, mut tmux_servers, mut sys) = refresh_full();
+    let mut sys = create_process_system();
+    let (mut trees, mut tmux_servers) = refresh_full(&mut sys);
     let mut status_msg: Option<(String, Instant)> = None;
     // Zombie confirmation dialog state
     let mut zombie_dialog: Option<Vec<ZombieEntry>> = None;
@@ -80,10 +81,9 @@ fn main() -> Result<()> {
                                     Err(msg) => status_msg = Some((msg, Instant::now())),
                                 }
                                 kill_dialog = KillDialogState::Closed;
-                                let r = refresh_full();
+                                let r = refresh_full(&mut sys);
                                 trees = r.0;
                                 tmux_servers = r.1;
-                                sys = r.2;
                                 last_status_refresh = Instant::now();
                             }
                             _ => {
@@ -119,10 +119,9 @@ fn main() -> Result<()> {
                                 };
                                 status_msg = Some((msg, Instant::now()));
                                 zombie_dialog = None;
-                                let r = refresh_full();
+                                let r = refresh_full(&mut sys);
                                 trees = r.0;
                                 tmux_servers = r.1;
-                                sys = r.2;
                                 last_status_refresh = Instant::now();
                             }
                             _ => {
@@ -137,10 +136,9 @@ fn main() -> Result<()> {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
                         KeyCode::Char('r') => {
-                            let r = refresh_full();
+                            let r = refresh_full(&mut sys);
                             trees = r.0;
                             tmux_servers = r.1;
-                            sys = r.2;
                             last_status_refresh = Instant::now();
                         },
                         KeyCode::Char('k') => {
@@ -171,13 +169,12 @@ fn main() -> Result<()> {
                 let need_status = last_status_refresh.elapsed() >= status_interval;
                 let r = if need_status {
                     last_status_refresh = Instant::now();
-                    refresh_full()
+                    refresh_full(&mut sys)
                 } else {
-                    refresh_quick(&trees, &tmux_servers)
+                    refresh_quick(&mut sys, &trees, &tmux_servers)
                 };
                 trees = r.0;
                 tmux_servers = r.1;
-                sys = r.2;
                 last_tick = Instant::now();
             }
         }
@@ -189,22 +186,25 @@ fn main() -> Result<()> {
 }
 
 /// Full refresh: process metrics + expensive status detection (capture-pane, jsonl).
-fn refresh_full() -> (Vec<SessionTree>, Vec<TmuxServer>, System) {
-    let sys = create_process_system();
-    let trees = build_trees(scan(&sys), &sys, false);
-    let tmux_servers = scan_tmux_servers(&sys, false);
-    (trees, tmux_servers, sys)
+fn refresh_full(sys: &mut System) -> (Vec<SessionTree>, Vec<TmuxServer>) {
+    refresh_process_system(sys);
+    let cache = ConfigDirCache::new();
+    let trees = build_trees(scan(sys), sys, false);
+    let tmux_servers = scan_tmux_servers_cached(sys, false, &cache);
+    (trees, tmux_servers)
 }
 
 /// Quick refresh: process metrics only, skips capture-pane/jsonl.
 /// Merges cached status from previous full refresh.
 fn refresh_quick(
+    sys: &mut System,
     prev_trees: &[SessionTree],
     prev_tmux: &[TmuxServer],
-) -> (Vec<SessionTree>, Vec<TmuxServer>, System) {
-    let sys = create_process_system();
-    let mut trees = build_trees(scan(&sys), &sys, true);
-    let mut tmux_servers = scan_tmux_servers(&sys, true);
+) -> (Vec<SessionTree>, Vec<TmuxServer>) {
+    refresh_process_system(sys);
+    let cache = ConfigDirCache::new();
+    let mut trees = build_trees(scan(sys), sys, true);
+    let mut tmux_servers = scan_tmux_servers_cached(sys, true, &cache);
 
     // Merge cached status from previous full refresh
     for tree in &mut trees {
@@ -234,7 +234,7 @@ fn refresh_quick(
         }
     }
 
-    (trees, tmux_servers, sys)
+    (trees, tmux_servers)
 }
 
 fn format_ts(epoch: u64) -> String {
