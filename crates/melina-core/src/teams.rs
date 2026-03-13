@@ -531,7 +531,13 @@ fn query_tmux_panes_from_snapshot(
                         p.start_time(),
                     )
                 }
-                None => (None, false, None, None, None, 0, 0.0, 0),
+                None => {
+                    // Fall back to shell process start_time so STARTED/UPTIME columns aren't blank
+                    let shell_start = sys.process(Pid::from_u32(shell_pid))
+                        .map(|p| p.start_time())
+                        .unwrap_or(0);
+                    (None, false, None, None, None, 0, 0.0, shell_start)
+                }
             };
 
         let (last_line, status, team_exists) = if skip_status {
