@@ -15,13 +15,35 @@ use std::collections::HashMap;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
+// Solarized Dark palette — works on any terminal, not just solarized-configured ones.
+#[allow(dead_code)]
+mod sol {
+    use ratatui::style::Color;
+    // Backgrounds
+    pub const BASE03: Color = Color::Rgb(0, 43, 54);     // darkest bg
+    pub const BASE02: Color = Color::Rgb(7, 54, 66);     // bg highlights (selection)
+    // Content tones
+    pub const BASE01: Color = Color::Rgb(88, 110, 117);  // comments, secondary, dim
+    pub const BASE00: Color = Color::Rgb(101, 123, 131); // muted body text
+    pub const BASE0: Color  = Color::Rgb(131, 148, 150); // default body text
+    pub const BASE1: Color  = Color::Rgb(147, 161, 161); // emphasized content
+    // Accent colors
+    pub const YELLOW: Color  = Color::Rgb(181, 137, 0);
+    pub const ORANGE: Color  = Color::Rgb(203, 75, 22);
+    pub const RED: Color     = Color::Rgb(220, 50, 47);
+    pub const MAGENTA: Color = Color::Rgb(211, 54, 130);
+    pub const VIOLET: Color  = Color::Rgb(108, 113, 196);
+    pub const BLUE: Color    = Color::Rgb(38, 139, 210);
+    pub const CYAN: Color    = Color::Rgb(42, 161, 152);
+    pub const GREEN: Color   = Color::Rgb(133, 153, 0);
+}
+
 fn main() -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
-    let tick_rate = Duration::from_secs(2);
-    let status_interval = Duration::from_secs(10);
+    let mut settings = Settings::default();
     let mut last_tick = Instant::now();
     let mut last_status_refresh = Instant::now();
     let mut sys = create_process_system();
@@ -34,23 +56,31 @@ fn main() -> Result<()> {
     let mut zombie_dialog: Option<Vec<ZombieEntry>> = None;
     // Kill-by-PID dialog state: list of selectable processes
     let mut kill_dialog: KillDialogState = KillDialogState::Closed;
+    // Settings dialog state
+    let mut settings_open = false;
+    let mut settings_selected: usize = 0;
     // Auto-cleanup timer (starts disabled)
     let mut auto_cleanup = AutoCleanup::new();
 
     loop {
         terminal.draw(|frame| {
-            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()), &sys, auto_cleanup.is_enabled());
+            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()), &sys, auto_cleanup.is_enabled(), &settings);
             if let Some(ref zombies) = zombie_dialog {
                 draw_zombie_dialog(frame, zombies);
             }
             draw_kill_dialog(frame, &kill_dialog);
+            if settings_open {
+                draw_settings_dialog(frame, &settings, settings_selected);
+            }
         })?;
 
         // Clear status message after 5 seconds
-        if status_msg.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(5)) {
+        if status_msg.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(settings.status_display_secs)) {
             status_msg = None;
         }
 
+        let tick_rate = settings.tick_rate();
+        let status_interval = settings.status_interval();
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
@@ -96,6 +126,35 @@ fn main() -> Result<()> {
                                 kill_dialog = KillDialogState::Closed;
                                 status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
                             }
+                        }
+                        continue;
+                    }
+
+                    // Settings dialog mode
+                    if settings_open {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('q') => {
+                                settings_open = false;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if settings_selected > 0 {
+                                    settings_selected -= 1;
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if settings_selected < Settings::FIELD_COUNT - 1 {
+                                    settings_selected += 1;
+                                }
+                            }
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                settings.adjust(settings_selected, -1);
+                                settings.apply_to_cleanup(&mut auto_cleanup);
+                            }
+                            KeyCode::Right | KeyCode::Char('l') => {
+                                settings.adjust(settings_selected, 1);
+                                settings.apply_to_cleanup(&mut auto_cleanup);
+                            }
+                            _ => {}
                         }
                         continue;
                     }
@@ -165,9 +224,17 @@ fn main() -> Result<()> {
                         KeyCode::Char('a') if !debounced('a', &mut last_key_time) => {
                             let enabled = auto_cleanup.toggle();
                             status_msg = Some((
-                                format!("Auto-cleanup: {}", if enabled { "ON (every 15m)" } else { "OFF" }),
+                                if enabled {
+                                    format!("Auto-cleanup: ON (every {}m)", settings.cleanup_interval_mins)
+                                } else {
+                                    "Auto-cleanup: OFF".to_string()
+                                },
                                 Instant::now(),
                             ));
+                        },
+                        KeyCode::Char('s') => {
+                            settings_open = true;
+                            settings_selected = 0;
                         },
                         _ => {}
                     }
@@ -294,7 +361,7 @@ fn format_uptime(start_time: u64) -> String {
     }
 }
 
-fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System, auto_cleanup_enabled: bool) {
+fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System, auto_cleanup_enabled: bool, settings: &Settings) {
     let area = frame.area();
 
     let has_tmux = !tmux_servers.is_empty();
@@ -370,10 +437,10 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
         let kind_str = format!("SESSION [{}] [{}]", ver, config);
         let status_str = format!("{} {}", tree.claude_status.symbol(), tree.claude_status.label());
         let session_style = match tree.claude_status {
-            ClaudeSessionStatus::Working => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-            ClaudeSessionStatus::Idle => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ClaudeSessionStatus::WaitingInput => Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-            ClaudeSessionStatus::Unknown => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Working => Style::default().fg(sol::GREEN).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Idle => Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::WaitingInput => Style::default().fg(sol::MAGENTA).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Unknown => Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD),
         };
         rows.push(Row::new(vec![
             format!("S{}", i + 1),
@@ -411,19 +478,19 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 String::new(), // STATUS
                 format!("{} mates, {} tasks{}", mates.len(), team.task_count, team_status),
                 String::new(), // TMUX
-            ]).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+            ]).style(Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)));
 
             for entry in &report.members {
                 let m = team.members.iter().find(|m| m.name == entry.name);
                 let (health_str, style) = match &entry.health {
-                    TeammateHealth::Active => ("ACTIVE".to_string(), Style::default().fg(Color::Green)),
-                    TeammateHealth::Completed => ("DONE".to_string(), Style::default().fg(Color::Cyan)),
-                    TeammateHealth::Zombie => ("ZOMBIE".to_string(), Style::default().fg(Color::Red)),
+                    TeammateHealth::Active => ("ACTIVE".to_string(), Style::default().fg(sol::GREEN)),
+                    TeammateHealth::Completed => ("DONE".to_string(), Style::default().fg(sol::CYAN)),
+                    TeammateHealth::Zombie => ("ZOMBIE".to_string(), Style::default().fg(sol::RED)),
                     TeammateHealth::Stale { idle_secs } => {
-                        (format!("STALE {}m", idle_secs / 60), Style::default().fg(Color::Yellow))
+                        (format!("STALE {}m", idle_secs / 60), Style::default().fg(sol::YELLOW))
                     }
                     TeammateHealth::Stuck { task_ids } => {
-                        (format!("STUCK({})", task_ids.len()), Style::default().fg(Color::Red))
+                        (format!("STUCK({})", task_ids.len()), Style::default().fg(sol::RED))
                     }
                 };
                 // In-process agents share resources with lead — show lead's PID with ~ prefix
@@ -485,10 +552,10 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 ChildKind::Unknown => "???".to_string(),
             };
             let style = match &child.kind {
-                ChildKind::McpServer { .. } => Style::default().fg(Color::Cyan),
-                ChildKind::Teammate { .. } => Style::default().fg(Color::Green),
-                ChildKind::HookScript => Style::default().fg(Color::Magenta),
-                _ => Style::default().fg(Color::Blue).add_modifier(Modifier::DIM),
+                ChildKind::McpServer { .. } => Style::default().fg(sol::CYAN),
+                ChildKind::Teammate { .. } => Style::default().fg(sol::GREEN),
+                ChildKind::HookScript => Style::default().fg(sol::MAGENTA),
+                _ => Style::default().fg(sol::BASE01),
             };
             let prefix = if ci == child_count - 1 { "  └─" } else { "  ├─" };
             let child_started = format_ts(child.info.start_time);
@@ -537,9 +604,9 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
         let mut tmux_rows = Vec::new();
         for srv in tmux_servers {
             let status_style = if srv.lead_alive {
-                Style::default().fg(Color::Green)
+                Style::default().fg(sol::GREEN)
             } else {
-                Style::default().fg(Color::Red)
+                Style::default().fg(sol::RED)
             };
             let pid_str = srv.server_pid.map(|p| format!("{}", p)).unwrap_or_default();
             let mem_str = if srv.memory_bytes > 0 {
@@ -564,10 +631,10 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
             // Show each pane with agent details
             for pane in &srv.panes {
                 let pane_style = match pane.status {
-                    PaneStatus::Active => Style::default().fg(Color::Green),
-                    PaneStatus::Idle => Style::default().fg(Color::Yellow),
-                    PaneStatus::Done => Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-                    PaneStatus::Shell => Style::default().fg(Color::Blue).add_modifier(Modifier::DIM),
+                    PaneStatus::Active => Style::default().fg(sol::GREEN),
+                    PaneStatus::Idle => Style::default().fg(sol::YELLOW),
+                    PaneStatus::Done => Style::default().fg(sol::BASE01),
+                    PaneStatus::Shell => Style::default().fg(sol::BASE01),
                 };
                 let agent = pane.agent_name.as_deref().unwrap_or("shell");
                 let claude_pid = pane.claude_pid
@@ -647,12 +714,13 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
     let footer_text = if let Some(msg) = status_msg {
         format!(" {} | q: quit | r: refresh | k: kill zombies", msg)
     } else {
-        " q: quit | r: refresh | k: kill zombies | d: kill PID | a: auto-cleanup | 2s".to_string()
+        format!(" q: quit | r: refresh | k: kill zombies | d: kill PID | a: auto-cleanup | s: settings | {}s",
+            settings.refresh_rate_secs)
     };
     let footer_style = if status_msg.is_some() {
-        Style::default().fg(Color::Green)
+        Style::default().fg(sol::GREEN)
     } else {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)
+        Style::default().fg(sol::BASE01)
     };
     let footer = Paragraph::new(footer_text)
         .style(footer_style)
@@ -693,7 +761,7 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
         format!(" Found {} zombie(s):", zombies.len()),
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        Style::default().fg(sol::RED).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
 
@@ -740,21 +808,21 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
             }
         };
         lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", icon), Style::default().fg(Color::Red)),
-            Span::styled(label, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {} ", icon), Style::default().fg(sol::RED)),
+            Span::styled(label, Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
         ]));
         lines.push(Line::from(Span::styled(
             detail,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(sol::BASE00),
         )));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled(" y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled(": kill all  ", Style::default().fg(Color::White)),
-        Span::styled("any other key", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(": cancel", Style::default().fg(Color::White)),
+        Span::styled(" y", Style::default().fg(sol::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(": kill all  ", Style::default().fg(sol::BASE0)),
+        Span::styled("any other key", Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)),
+        Span::styled(": cancel", Style::default().fg(sol::BASE0)),
     ]));
 
     let dialog_widget = Paragraph::new(lines)
@@ -762,11 +830,11 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red))
+                .border_style(Style::default().fg(sol::RED))
                 .title(" Kill Zombies? ")
-                .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().fg(sol::RED).add_modifier(Modifier::BOLD)),
         )
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(sol::BASE03));
 
     frame.render_widget(dialog_widget, dialog_area);
 }
@@ -903,7 +971,7 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
 
             frame.render_widget(Clear, dialog_area);
 
-            let hdr_style = Style::default().fg(Color::Rgb(88, 110, 117)).add_modifier(Modifier::BOLD);
+            let hdr_style = Style::default().fg(sol::BASE01).add_modifier(Modifier::BOLD);
             let header = Row::new(vec![
                 Cell::from("PID").style(hdr_style),
                 Cell::from("KIND").style(hdr_style),
@@ -916,21 +984,21 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                 let marker = if i == *selected { "> " } else { "  " };
                 let indent_prefix = if e.indent > 0 { "  " } else { "" };
                 let label_style = if e.indent > 0 {
-                    Style::default().fg(Color::Cyan)
+                    Style::default().fg(sol::CYAN)
                 } else {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD)
                 };
                 Row::new(vec![
                     Cell::from(format!("{}{}", marker, e.pid))
-                        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                        .style(Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
                     Cell::from(format!("{}{}", indent_prefix, e.label))
                         .style(label_style),
                     Cell::from(e.status.as_str())
-                        .style(Style::default().fg(Color::Green)),
+                        .style(Style::default().fg(sol::GREEN)),
                     Cell::from(e.uptime.as_str())
-                        .style(Style::default().fg(Color::Yellow)),
+                        .style(Style::default().fg(sol::YELLOW)),
                     Cell::from(e.detail.as_str())
-                        .style(Style::default().fg(Color::Gray)),
+                        .style(Style::default().fg(sol::BASE00)),
                 ])
             }).collect();
 
@@ -947,12 +1015,12 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Yellow))
+                        .border_style(Style::default().fg(sol::YELLOW))
                         .title(" Kill Process (↑↓ select, Enter confirm, Esc cancel) ")
-                        .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                        .title_style(Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)),
                 )
-                .row_highlight_style(Style::default().bg(Color::DarkGray))
-                .style(Style::default().bg(Color::Black));
+                .row_highlight_style(Style::default().bg(sol::BASE02))
+                .style(Style::default().bg(sol::BASE03));
 
             let mut table_state = TableState::default();
             table_state.select(Some(*selected));
@@ -967,20 +1035,20 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
             let lines = vec![
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(" Kill ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("PID:{}", entry.pid), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" ({})?", entry.label), Style::default().fg(Color::Cyan)),
+                    Span::styled(" Kill ", Style::default().fg(sol::RED).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("PID:{}", entry.pid), Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" ({})?", entry.label), Style::default().fg(sol::CYAN)),
                 ]),
                 Line::from(Span::styled(
                     format!(" {} — {}", entry.status, entry.detail),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(sol::BASE00),
                 )),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(" y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                    Span::styled(": kill  ", Style::default().fg(Color::White)),
-                    Span::styled("any other key", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                    Span::styled(": cancel", Style::default().fg(Color::White)),
+                    Span::styled(" y", Style::default().fg(sol::RED).add_modifier(Modifier::BOLD)),
+                    Span::styled(": kill  ", Style::default().fg(sol::BASE0)),
+                    Span::styled("any other key", Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)),
+                    Span::styled(": cancel", Style::default().fg(sol::BASE0)),
                 ]),
             ];
 
@@ -989,11 +1057,11 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red))
+                        .border_style(Style::default().fg(sol::RED))
                         .title(" Confirm Kill ")
-                        .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                        .title_style(Style::default().fg(sol::RED).add_modifier(Modifier::BOLD)),
                 )
-                .style(Style::default().bg(Color::Black));
+                .style(Style::default().bg(sol::BASE03));
 
             frame.render_widget(widget, dialog_area);
         }
@@ -1001,6 +1069,144 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
 }
 
 /// Create a centered rect of given width and height within `area`.
+// ── Settings ────────────────────────────────────────────────────
+
+/// Configurable TUI settings, adjustable via the settings popup (s key).
+struct Settings {
+    /// Auto-refresh interval in seconds.
+    refresh_rate_secs: u64,
+    /// Full status refresh interval in seconds (capture-pane, git, etc.).
+    status_refresh_secs: u64,
+    /// Auto-cleanup interval in minutes.
+    cleanup_interval_mins: u64,
+    /// Status message display duration in seconds.
+    status_display_secs: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            refresh_rate_secs: 2,
+            status_refresh_secs: 10,
+            cleanup_interval_mins: 15,
+            status_display_secs: 5,
+        }
+    }
+}
+
+impl Settings {
+    const FIELD_COUNT: usize = 4;
+
+    fn tick_rate(&self) -> Duration {
+        Duration::from_secs(self.refresh_rate_secs)
+    }
+
+    fn status_interval(&self) -> Duration {
+        Duration::from_secs(self.status_refresh_secs)
+    }
+
+    fn cleanup_interval(&self) -> Duration {
+        Duration::from_secs(self.cleanup_interval_mins * 60)
+    }
+
+    /// Apply cleanup interval to AutoCleanup timer.
+    fn apply_to_cleanup(&self, ac: &mut AutoCleanup) {
+        ac.set_interval(self.cleanup_interval());
+    }
+
+    /// Get field name, current value, and unit for display.
+    fn field_info(&self, idx: usize) -> (&str, u64, &str) {
+        match idx {
+            0 => ("Refresh rate", self.refresh_rate_secs, "s"),
+            1 => ("Status refresh", self.status_refresh_secs, "s"),
+            2 => ("Cleanup interval", self.cleanup_interval_mins, "min"),
+            3 => ("Status display", self.status_display_secs, "s"),
+            _ => ("?", 0, ""),
+        }
+    }
+
+    /// Adjust a field value by delta (+1 or -1 step).
+    fn adjust(&mut self, idx: usize, delta: i32) {
+        match idx {
+            0 => {
+                // refresh: 1, 2, 3, 5, 10
+                let steps = [1, 2, 3, 5, 10];
+                self.refresh_rate_secs = step_value(self.refresh_rate_secs, &steps, delta);
+            }
+            1 => {
+                // status refresh: 5, 10, 15, 20, 30, 60
+                let steps = [5, 10, 15, 20, 30, 60];
+                self.status_refresh_secs = step_value(self.status_refresh_secs, &steps, delta);
+            }
+            2 => {
+                // cleanup interval: 5, 10, 15, 30, 60
+                let steps = [5, 10, 15, 30, 60];
+                self.cleanup_interval_mins = step_value(self.cleanup_interval_mins, &steps, delta);
+            }
+            3 => {
+                // status display: 3, 5, 8, 10, 15
+                let steps = [3, 5, 8, 10, 15];
+                self.status_display_secs = step_value(self.status_display_secs, &steps, delta);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Step through a predefined list of values. Returns the next/prev value.
+fn step_value(current: u64, steps: &[u64], delta: i32) -> u64 {
+    let pos = steps.iter().position(|&v| v >= current).unwrap_or(0);
+    let new_pos = (pos as i32 + delta).clamp(0, steps.len() as i32 - 1) as usize;
+    steps[new_pos]
+}
+
+/// Draw the settings popup dialog.
+fn draw_settings_dialog(frame: &mut Frame, settings: &Settings, selected: usize) {
+    use ratatui::widgets::Clear;
+
+    let area = frame.area();
+    let dialog_area = centered_rect(50, (Settings::FIELD_COUNT as u16) + 6, area);
+    frame.render_widget(Clear, dialog_area);
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " ←/→ adjust  ↑/↓ navigate  Esc close",
+        Style::default().fg(sol::BASE01),
+    )));
+    lines.push(Line::from(""));
+
+    for i in 0..Settings::FIELD_COUNT {
+        let (name, value, unit) = settings.field_info(i);
+        let is_selected = i == selected;
+        let marker = if is_selected { " ▸ " } else { "   " };
+        let style = if is_selected {
+            Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(sol::BASE0)
+        };
+        let arrows = if is_selected { "  ◂ ▸" } else { "" };
+        lines.push(Line::from(vec![
+            Span::styled(marker, style),
+            Span::styled(format!("{:<20}", name), style),
+            Span::styled(format!("{}{}", value, unit), Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled(arrows, Style::default().fg(sol::BASE01)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(sol::CYAN))
+                .title(" Settings ")
+                .title_style(Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD)),
+        )
+        .style(Style::default().bg(sol::BASE03));
+
+    frame.render_widget(paragraph, dialog_area);
+}
+
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let v = Layout::default()
         .direction(Direction::Vertical)

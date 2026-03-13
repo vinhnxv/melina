@@ -915,6 +915,11 @@ impl AutoCleanup {
         self.enabled
     }
 
+    /// Update the cleanup interval duration.
+    pub fn set_interval(&mut self, interval: Duration) {
+        self.interval = interval;
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
