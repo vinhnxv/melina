@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, ChildKind, TeammateHealth, PaneStatus};
+use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, kill_zombies_with, format_cleanup_result, AutoCleanup, ChildKind, TeammateHealth, PaneStatus};
 use sysinfo::{Pid, System};
 
 #[derive(Parser)]
@@ -30,6 +30,10 @@ struct Cli {
     /// Kill process by PID (sends SIGTERM, then SIGKILL after 5s)
     #[arg(long, value_name = "PID")]
     kill: Option<Vec<u32>>,
+
+    /// Enable auto-cleanup in watch mode (every 15 min)
+    #[arg(long)]
+    auto_cleanup: bool,
 }
 
 fn main() -> Result<()> {
@@ -46,9 +50,23 @@ fn main() -> Result<()> {
 
     if let Some(interval) = cli.watch {
         let mut sys = create_process_system();
+        let mut auto_cleanup = AutoCleanup::new();
+        if cli.auto_cleanup {
+            auto_cleanup.toggle();
+        }
+
         loop {
             print!("\x1B[2J\x1B[H");
             render_with_sys(&cli, &mut sys)?;
+
+            // Auto-cleanup check — just a timestamp compare, ~5ns cost
+            if auto_cleanup.should_run() {
+                let result = kill_zombies_with(&sys);
+                if result.total() > 0 {
+                    println!("\n\x1b[33mAuto-cleanup:\x1b[0m {}", format_cleanup_result(&result));
+                }
+            }
+
             std::thread::sleep(std::time::Duration::from_secs(interval));
         }
     } else {

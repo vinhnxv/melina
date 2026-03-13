@@ -5,7 +5,7 @@ use crate::discovery::create_process_system;
 use crate::teams::{TeamInfo, TeamMember};
 use serde::Serialize;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Create a lightweight System for kill/lookup operations (no CPU, single refresh).
@@ -295,6 +295,14 @@ pub enum ZombieEntry {
         pane_id: String,
         shell_pid: u32,
     },
+    /// An idle shell pane inside an active claude-swarm server:
+    /// claude process exited, shell remains with uptime > IDLE_SHELL_UPTIME_MIN_SECS.
+    IdleShell {
+        socket_name: String,
+        pane_id: String,
+        shell_pid: u32,
+        uptime_secs: u64,
+    },
 }
 
 impl ZombieEntry {
@@ -333,6 +341,17 @@ impl ZombieEntry {
                     pane_id, shell_pid, socket_name
                 )
             }
+            ZombieEntry::IdleShell {
+                socket_name,
+                pane_id,
+                shell_pid,
+                uptime_secs,
+            } => {
+                format!(
+                    "IDLE SHELL: pane {} (sh:{}, {}m up) in {}",
+                    pane_id, shell_pid, uptime_secs / 60, socket_name
+                )
+            }
         }
     }
 
@@ -342,20 +361,30 @@ impl ZombieEntry {
             ZombieEntry::Team { .. } => "owner process is dead",
             ZombieEntry::OrphanTmux { .. } => "lead process is dead",
             ZombieEntry::OrphanShell { .. } => "claude process exited, empty shell remains",
+            ZombieEntry::IdleShell { .. } => "claude process exited, shell idle too long",
         }
     }
 }
 
+/// Minimum uptime (in seconds) for an idle shell to be considered for cleanup.
+/// Shells alive for less than this are likely still initializing.
+const IDLE_SHELL_UPTIME_MIN_SECS: u64 = 8 * 60; // 8 minutes
+
 /// Scan for zombie teams and orphan tmux servers without killing anything.
 pub fn scan_zombies() -> Vec<ZombieEntry> {
+    let sys = create_process_system();
+    scan_zombies_with(&sys)
+}
+
+/// Scan for zombies using an existing System (no new allocation).
+pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
     use crate::teams::{scan_teams, scan_tmux_servers};
 
-    let sys = create_process_system();
     let teams = scan_teams();
     let mut entries = Vec::new();
 
     for team in &teams {
-        let report = check_team_health(team, &sys);
+        let report = check_team_health(team, sys);
         if !report.owner_alive {
             entries.push(ZombieEntry::Team {
                 name: team.name.clone(),
@@ -366,7 +395,8 @@ pub fn scan_zombies() -> Vec<ZombieEntry> {
         }
     }
 
-    let tmux_servers = scan_tmux_servers(&sys, true);
+    let tmux_servers = scan_tmux_servers(sys, true);
+    let now = now_epoch();
     for srv in &tmux_servers {
         if srv.is_orphan() {
             entries.push(ZombieEntry::OrphanTmux {
@@ -376,14 +406,33 @@ pub fn scan_zombies() -> Vec<ZombieEntry> {
                 server_pid: srv.server_pid,
             });
         } else {
-            // Active server — check for orphan shell panes (claude exited, shell remains)
+            // Active server — check for orphan and idle shell panes
             for pane in &srv.panes {
-                if !pane.claude_alive && pane.agent_name.is_none() {
-                    entries.push(ZombieEntry::OrphanShell {
-                        socket_name: srv.socket_name.clone(),
-                        pane_id: pane.pane_id.clone(),
-                        shell_pid: pane.shell_pid,
-                    });
+                if !pane.claude_alive {
+                    // Check uptime for idle shell detection
+                    // Guard: skip if start_time is 0 (unknown)
+                    let uptime = if pane.start_time > 0 {
+                        now.saturating_sub(pane.start_time)
+                    } else {
+                        0
+                    };
+
+                    if uptime >= IDLE_SHELL_UPTIME_MIN_SECS && pane.start_time > 0 {
+                        // Idle shell: claude exited, shell has been running 8+ min
+                        entries.push(ZombieEntry::IdleShell {
+                            socket_name: srv.socket_name.clone(),
+                            pane_id: pane.pane_id.clone(),
+                            shell_pid: pane.shell_pid,
+                            uptime_secs: uptime,
+                        });
+                    } else if pane.agent_name.is_none() {
+                        // Short-lived orphan shell (no agent, under threshold)
+                        entries.push(ZombieEntry::OrphanShell {
+                            socket_name: srv.socket_name.clone(),
+                            pane_id: pane.pane_id.clone(),
+                            shell_pid: pane.shell_pid,
+                        });
+                    }
                 }
             }
         }
@@ -401,30 +450,37 @@ pub struct KillZombiesResult {
     pub tmux_cleaned: usize,
     /// Number of orphan shell panes killed.
     pub shells_cleaned: usize,
+    /// Number of idle shell panes killed.
+    pub idle_shells_cleaned: usize,
     /// Error messages from failed operations.
     pub errors: Vec<String>,
 }
 
 impl KillZombiesResult {
     pub fn total(&self) -> usize {
-        self.teams_cleaned + self.tmux_cleaned + self.shells_cleaned
+        self.teams_cleaned + self.tmux_cleaned + self.shells_cleaned + self.idle_shells_cleaned
     }
 }
 
-/// Kill all zombie teams, orphan tmux servers, and orphan shell panes.
+/// Kill all zombie teams, orphan tmux servers, and orphan/idle shell panes.
 ///
 /// For zombie teams: kills tmux teammates, removes team/task directories.
 /// For orphan tmux servers: kills the tmux server process.
-/// For orphan shells: kills the empty tmux pane.
+/// For orphan/idle shells: kills the empty tmux pane.
 pub fn kill_zombies() -> KillZombiesResult {
+    let sys = create_process_system();
+    kill_zombies_with(&sys)
+}
+
+/// Kill zombies using an existing System (no new allocation).
+pub fn kill_zombies_with(sys: &System) -> KillZombiesResult {
     use crate::teams::{kill_tmux_server, scan_teams, scan_tmux_servers};
 
-    let sys = create_process_system();
     let teams = scan_teams();
     let mut result = KillZombiesResult::default();
 
     for team in &teams {
-        let report = check_team_health(team, &sys);
+        let report = check_team_health(team, sys);
         if !report.owner_alive {
             // Kill tmux teammates
             for member in &team.members {
@@ -477,8 +533,9 @@ pub fn kill_zombies() -> KillZombiesResult {
         }
     }
 
-    // Kill orphan tmux servers and orphan shell panes
-    let tmux_servers = scan_tmux_servers(&sys, true);
+    // Kill orphan tmux servers and orphan/idle shell panes
+    let tmux_servers = scan_tmux_servers(sys, true);
+    let now = now_epoch();
     for srv in &tmux_servers {
         if srv.is_orphan() {
             if kill_tmux_server(&srv.socket_name) {
@@ -489,24 +546,41 @@ pub fn kill_zombies() -> KillZombiesResult {
                     .push(format!("failed to kill tmux server {}", srv.socket_name));
             }
         } else {
-            // Active server — kill orphan shell panes (claude exited, empty shell remains)
+            // Active server — kill orphan and idle shell panes
             for pane in &srv.panes {
-                if !pane.claude_alive && pane.agent_name.is_none() {
-                    let digits = &pane.pane_id[1..];
-                    if pane.pane_id.starts_with('%')
-                        && !digits.is_empty()
-                        && digits.chars().all(|c| c.is_ascii_digit())
-                    {
-                        let kill_result = std::process::Command::new("tmux")
-                            .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
-                            .output();
-                        if kill_result.is_ok_and(|o| o.status.success()) {
-                            result.shells_cleaned += 1;
-                        } else {
-                            result.errors.push(format!(
-                                "failed to kill orphan shell pane {} in {}",
-                                pane.pane_id, srv.socket_name
-                            ));
+                if !pane.claude_alive {
+                    let uptime = if pane.start_time > 0 {
+                        now.saturating_sub(pane.start_time)
+                    } else {
+                        0
+                    };
+
+                    let is_idle = uptime >= IDLE_SHELL_UPTIME_MIN_SECS && pane.start_time > 0;
+                    let is_orphan = pane.agent_name.is_none() && !is_idle;
+
+                    if is_idle || is_orphan {
+                        let digits = &pane.pane_id[1..];
+                        if pane.pane_id.starts_with('%')
+                            && !digits.is_empty()
+                            && digits.chars().all(|c| c.is_ascii_digit())
+                        {
+                            let kill_result = std::process::Command::new("tmux")
+                                .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
+                                .output();
+                            if kill_result.is_ok_and(|o| o.status.success()) {
+                                if is_idle {
+                                    result.idle_shells_cleaned += 1;
+                                } else {
+                                    result.shells_cleaned += 1;
+                                }
+                            } else {
+                                result.errors.push(format!(
+                                    "failed to kill {} pane {} in {}",
+                                    if is_idle { "idle" } else { "orphan" },
+                                    pane.pane_id,
+                                    srv.socket_name
+                                ));
+                            }
                         }
                     }
                 }
@@ -675,6 +749,79 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
             Err(format!("PID {} disappeared before kill", pid))
         }
         ProcessLookupKind::NotFound => Err(format!("PID {} not found", pid)),
+    }
+}
+
+// ── Auto-Cleanup Timer ───────────────────────────────────────────
+
+/// Lightweight timer for periodic auto-cleanup. Zero allocation between runs.
+/// Only cost per tick: one `Instant::elapsed()` comparison (~5ns).
+pub struct AutoCleanup {
+    enabled: bool,
+    interval: Duration,
+    last_run: Option<Instant>,
+}
+
+impl AutoCleanup {
+    pub fn new() -> Self {
+        Self {
+            enabled: false,
+            interval: Duration::from_secs(15 * 60), // 15 minutes
+            last_run: None,
+        }
+    }
+
+    /// Toggle auto-cleanup on/off. Returns the new state.
+    pub fn toggle(&mut self) -> bool {
+        self.enabled = !self.enabled;
+        if self.enabled {
+            // Set last_run to now so it doesn't fire immediately on toggle
+            self.last_run = Some(Instant::now());
+        }
+        self.enabled
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Check if it's time to run. Returns true at most once per interval.
+    /// Cost: one `Instant::elapsed()` comparison (~5ns) — essentially free.
+    pub fn should_run(&mut self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        if self.last_run.map_or(true, |t| t.elapsed() >= self.interval) {
+            self.last_run = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Format a cleanup result for display in TUI status bar or CLI output.
+pub fn format_cleanup_result(result: &KillZombiesResult) -> String {
+    let mut parts = Vec::new();
+    if result.teams_cleaned > 0 {
+        parts.push(format!("{} team(s)", result.teams_cleaned));
+    }
+    if result.tmux_cleaned > 0 {
+        parts.push(format!("{} tmux", result.tmux_cleaned));
+    }
+    if result.shells_cleaned > 0 {
+        parts.push(format!("{} shell(s)", result.shells_cleaned));
+    }
+    if result.idle_shells_cleaned > 0 {
+        parts.push(format!("{} idle shell(s)", result.idle_shells_cleaned));
+    }
+    if !result.errors.is_empty() {
+        parts.push(format!("{} error(s)", result.errors.len()));
+    }
+    if parts.is_empty() {
+        "No zombies found".to_string()
+    } else {
+        format!("Cleaned: {}", parts.join(", "))
     }
 }
 
@@ -892,6 +1039,7 @@ mod tests {
             teams_cleaned: 2,
             tmux_cleaned: 0,
             shells_cleaned: 0,
+            idle_shells_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 2);
@@ -901,6 +1049,7 @@ mod tests {
             teams_cleaned: 0,
             tmux_cleaned: 3,
             shells_cleaned: 0,
+            idle_shells_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 3);
@@ -910,17 +1059,122 @@ mod tests {
             teams_cleaned: 0,
             tmux_cleaned: 0,
             shells_cleaned: 5,
+            idle_shells_cleaned: 0,
             errors: vec![],
         };
         assert_eq!(result.total(), 5);
+
+        // Only idle shells cleaned
+        let result = KillZombiesResult {
+            teams_cleaned: 0,
+            tmux_cleaned: 0,
+            shells_cleaned: 0,
+            idle_shells_cleaned: 4,
+            errors: vec![],
+        };
+        assert_eq!(result.total(), 4);
 
         // Mixed counts
         let result = KillZombiesResult {
             teams_cleaned: 2,
             tmux_cleaned: 3,
             shells_cleaned: 5,
+            idle_shells_cleaned: 1,
             errors: vec!["some error".to_string()],
         };
-        assert_eq!(result.total(), 10);
+        assert_eq!(result.total(), 11);
+    }
+
+    // ── IdleShell variant tests ─────────────────────────────────────
+
+    #[test]
+    fn test_idle_shell_label() {
+        let idle = ZombieEntry::IdleShell {
+            socket_name: "claude-swarm-123".to_string(),
+            pane_id: "%5".to_string(),
+            shell_pid: 99999,
+            uptime_secs: 600,
+        };
+        assert_eq!(
+            idle.label(),
+            "IDLE SHELL: pane %5 (sh:99999, 10m up) in claude-swarm-123"
+        );
+    }
+
+    #[test]
+    fn test_idle_shell_reason() {
+        let idle = ZombieEntry::IdleShell {
+            socket_name: "test".to_string(),
+            pane_id: "%0".to_string(),
+            shell_pid: 1,
+            uptime_secs: 500,
+        };
+        assert_eq!(idle.reason(), "claude process exited, shell idle too long");
+    }
+
+    // ── AutoCleanup tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_auto_cleanup_new_starts_disabled() {
+        let ac = AutoCleanup::new();
+        assert!(!ac.is_enabled());
+    }
+
+    #[test]
+    fn test_auto_cleanup_toggle() {
+        let mut ac = AutoCleanup::new();
+        assert!(ac.toggle());  // now enabled
+        assert!(ac.is_enabled());
+        assert!(!ac.toggle()); // now disabled
+        assert!(!ac.is_enabled());
+    }
+
+    #[test]
+    fn test_auto_cleanup_should_run_when_disabled() {
+        let mut ac = AutoCleanup::new();
+        assert!(!ac.should_run());
+    }
+
+    #[test]
+    fn test_auto_cleanup_should_run_not_before_interval() {
+        let mut ac = AutoCleanup::new();
+        ac.toggle(); // enable — sets last_run to now
+        // Should not fire immediately after toggle
+        assert!(!ac.should_run());
+    }
+
+    // ── format_cleanup_result tests ──────────────────────────────────
+
+    #[test]
+    fn test_format_cleanup_result_empty() {
+        let result = KillZombiesResult::default();
+        assert_eq!(format_cleanup_result(&result), "No zombies found");
+    }
+
+    #[test]
+    fn test_format_cleanup_result_mixed() {
+        let result = KillZombiesResult {
+            teams_cleaned: 1,
+            tmux_cleaned: 2,
+            shells_cleaned: 0,
+            idle_shells_cleaned: 3,
+            errors: vec!["err".to_string()],
+        };
+        assert_eq!(
+            format_cleanup_result(&result),
+            "Cleaned: 1 team(s), 2 tmux, 3 idle shell(s), 1 error(s)"
+        );
+    }
+
+    #[test]
+    fn test_format_cleanup_result_teams_only() {
+        let result = KillZombiesResult {
+            teams_cleaned: 2,
+            tmux_cleaned: 0,
+            shells_cleaned: 0,
+            idle_shells_cleaned: 0,
+            errors: vec![],
+        };
+        assert_eq!(format_cleanup_result(&result), "Cleaned: 2 team(s)");
     }
 }
