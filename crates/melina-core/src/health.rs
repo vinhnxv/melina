@@ -174,16 +174,13 @@ fn check_team_owner_alive(team: &TeamInfo, sys: &System) -> bool {
         .join("teams")
         .join(&team.name)
         .join(".session");
-    if let Ok(content) = std::fs::read_to_string(&session_path) {
-        if let Ok(session) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(pid_str) = session.get("owner_pid").and_then(|v| v.as_str()) {
-                if let Ok(pid) = pid_str.parse::<u32>() {
-                    return is_pid_alive(pid, sys);
-                }
-            }
-        }
-    }
-    false
+    let alive = std::fs::read_to_string(&session_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|session| session.get("owner_pid").and_then(|v| v.as_str()).map(String::from))
+        .and_then(|pid_str| pid_str.parse::<u32>().ok())
+        .map(|pid| is_pid_alive(pid, sys));
+    alive.unwrap_or(false)
 }
 
 /// Check individual teammate health from inbox + task signals.
