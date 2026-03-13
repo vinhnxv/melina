@@ -1,7 +1,7 @@
 //! Process discovery — find all Claude Code related processes via sysinfo.
 
 use serde::Serialize;
-use sysinfo::{System, Pid, Process};
+use sysinfo::{System, Pid, Process, ProcessesToUpdate};
 use std::path::PathBuf;
 
 /// Raw process info extracted from the OS.
@@ -54,14 +54,26 @@ impl ProcessInfo {
     }
 }
 
-/// Scan all processes and return Claude-related ones.
-/// Refreshes twice with a short pause so `cpu_usage()` returns real values.
-pub fn scan() -> Vec<ProcessInfo> {
+/// Create a `System` that loads process info with accurate CPU values.
+///
+/// macOS requires 3 refreshes for `cpu_usage()` to return non-zero values:
+/// 1. `new_all()` — initializes global CPU state + first process snapshot
+/// 2. `refresh_all()` — sets the CPU time baseline
+/// 3. sleep + `refresh_processes()` — calculates CPU delta
+///
+/// After initial creation, only `refresh_processes()` is needed for updates
+/// (no disks/networks/components overhead on subsequent calls).
+pub fn create_process_system() -> System {
     let mut sys = System::new_all();
     sys.refresh_all();
     std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_all();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys
+}
 
+/// Scan all processes and return Claude-related ones.
+/// Uses a pre-created `System` to avoid redundant allocations.
+pub fn scan(sys: &System) -> Vec<ProcessInfo> {
     sys.processes()
         .iter()
         .filter_map(|(&pid, proc_)| {

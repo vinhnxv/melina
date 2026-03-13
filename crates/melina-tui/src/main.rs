@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees, check_team_health, resolve_tmux_pids, scan_tmux_servers, scan_zombies, kill_zombies, kill_process, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees, create_process_system, check_team_health, scan_tmux_servers, scan_zombies, kill_zombies, kill_process, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -20,8 +20,10 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     let tick_rate = Duration::from_secs(2);
+    let status_interval = Duration::from_secs(10);
     let mut last_tick = Instant::now();
-    let (mut trees, mut tmux_servers) = refresh();
+    let mut last_status_refresh = Instant::now();
+    let (mut trees, mut tmux_servers, mut sys) = refresh_full();
     let mut status_msg: Option<(String, Instant)> = None;
     // Zombie confirmation dialog state
     let mut zombie_dialog: Option<Vec<ZombieEntry>> = None;
@@ -30,7 +32,7 @@ fn main() -> Result<()> {
 
     loop {
         terminal.draw(|frame| {
-            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()));
+            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()), &sys);
             if let Some(ref zombies) = zombie_dialog {
                 draw_zombie_dialog(frame, zombies);
             }
@@ -78,9 +80,11 @@ fn main() -> Result<()> {
                                     Err(msg) => status_msg = Some((msg, Instant::now())),
                                 }
                                 kill_dialog = KillDialogState::Closed;
-                                let r = refresh();
+                                let r = refresh_full();
                                 trees = r.0;
                                 tmux_servers = r.1;
+                                sys = r.2;
+                                last_status_refresh = Instant::now();
                             }
                             _ => {
                                 kill_dialog = KillDialogState::Closed;
@@ -105,6 +109,9 @@ fn main() -> Result<()> {
                                     if result.tmux_cleaned > 0 {
                                         parts.push(format!("{} tmux", result.tmux_cleaned));
                                     }
+                                    if result.shells_cleaned > 0 {
+                                        parts.push(format!("{} shell(s)", result.shells_cleaned));
+                                    }
                                     if !result.errors.is_empty() {
                                         parts.push(format!("{} error(s)", result.errors.len()));
                                     }
@@ -112,9 +119,11 @@ fn main() -> Result<()> {
                                 };
                                 status_msg = Some((msg, Instant::now()));
                                 zombie_dialog = None;
-                                let r = refresh();
+                                let r = refresh_full();
                                 trees = r.0;
                                 tmux_servers = r.1;
+                                sys = r.2;
+                                last_status_refresh = Instant::now();
                             }
                             _ => {
                                 // Any other key cancels
@@ -128,9 +137,11 @@ fn main() -> Result<()> {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
                         KeyCode::Char('r') => {
-                            let r = refresh();
+                            let r = refresh_full();
                             trees = r.0;
                             tmux_servers = r.1;
+                            sys = r.2;
+                            last_status_refresh = Instant::now();
                         },
                         KeyCode::Char('k') => {
                             let zombies = scan_zombies();
@@ -157,9 +168,16 @@ fn main() -> Result<()> {
         if last_tick.elapsed() >= tick_rate {
             // Don't auto-refresh while any dialog is open
             if zombie_dialog.is_none() && matches!(kill_dialog, KillDialogState::Closed) {
-                let r = refresh();
+                let need_status = last_status_refresh.elapsed() >= status_interval;
+                let r = if need_status {
+                    last_status_refresh = Instant::now();
+                    refresh_full()
+                } else {
+                    refresh_quick(&trees, &tmux_servers)
+                };
                 trees = r.0;
                 tmux_servers = r.1;
+                sys = r.2;
                 last_tick = Instant::now();
             }
         }
@@ -170,13 +188,53 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn refresh() -> (Vec<SessionTree>, Vec<TmuxServer>) {
-    let mut trees = build_trees(scan());
+/// Full refresh: process metrics + expensive status detection (capture-pane, jsonl).
+fn refresh_full() -> (Vec<SessionTree>, Vec<TmuxServer>, System) {
+    let sys = create_process_system();
+    let trees = build_trees(scan(&sys), &sys, false);
+    let tmux_servers = scan_tmux_servers(&sys, false);
+    (trees, tmux_servers, sys)
+}
+
+/// Quick refresh: process metrics only, skips capture-pane/jsonl.
+/// Merges cached status from previous full refresh.
+fn refresh_quick(
+    prev_trees: &[SessionTree],
+    prev_tmux: &[TmuxServer],
+) -> (Vec<SessionTree>, Vec<TmuxServer>, System) {
+    let sys = create_process_system();
+    let mut trees = build_trees(scan(&sys), &sys, true);
+    let mut tmux_servers = scan_tmux_servers(&sys, true);
+
+    // Merge cached status from previous full refresh
     for tree in &mut trees {
-        resolve_tmux_pids(&mut tree.teams);
+        if let Some(prev) = prev_trees.iter().find(|t| t.root.pid == tree.root.pid) {
+            tree.claude_status = prev.claude_status;
+            if tree.git_context.is_none() {
+                tree.git_context = prev.git_context.clone();
+            }
+        }
     }
-    let tmux_servers = scan_tmux_servers();
-    (trees, tmux_servers)
+
+    // Merge cached tmux pane data (last_line, status, team_exists) from previous full refresh
+    for srv in &mut tmux_servers {
+        if let Some(prev_srv) = prev_tmux.iter().find(|s| s.socket_name == srv.socket_name) {
+            for pane in &mut srv.panes {
+                if let Some(prev_pane) = prev_srv.panes.iter().find(|p| p.pane_id == pane.pane_id) {
+                    if pane.last_line.is_none() {
+                        pane.last_line = prev_pane.last_line.clone();
+                    }
+                    if pane.status != PaneStatus::Shell {
+                        // Preserve richer status from full refresh (e.g. Done vs Idle)
+                        pane.status = prev_pane.status.clone();
+                    }
+                    pane.team_exists = prev_pane.team_exists;
+                }
+            }
+        }
+    }
+
+    (trees, tmux_servers, sys)
 }
 
 fn format_ts(epoch: u64) -> String {
@@ -202,9 +260,8 @@ fn format_uptime(start_time: u64) -> String {
     }
 }
 
-fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>) {
+fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System) {
     let area = frame.area();
-    let sys = System::new_all();
 
     let has_tmux = !tmux_servers.is_empty();
     let total_panes: usize = tmux_servers.iter().map(|s| s.panes.len()).sum();
@@ -333,21 +390,39 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                         (format!("STUCK({})", task_ids.len()), Style::default().fg(Color::Red))
                     }
                 };
-                let pid_str = m.and_then(|m| m.tmux_pid)
-                    .map(|p| format!("{}", p))
-                    .unwrap_or_default();
-                let cpu_str = m.filter(|m| m.tmux_pid.is_some())
-                    .map(|m| format!("{:.1}%", m.cpu_percent))
-                    .unwrap_or_default();
-                let mem_str = m.filter(|m| m.memory_bytes > 0)
-                    .map(|m| format!("{:.1}MB", m.memory_bytes as f64 / 1_048_576.0))
-                    .unwrap_or_default();
-                let started = m.filter(|m| m.start_time > 0)
-                    .map(|m| format_ts(m.start_time))
-                    .unwrap_or_default();
-                let uptime = m.filter(|m| m.start_time > 0)
-                    .map(|m| format_uptime(m.start_time))
-                    .unwrap_or_default();
+                // In-process agents share resources with lead — show lead's PID with ~ prefix
+                let has_own_pid = m.and_then(|m| m.tmux_pid).is_some();
+                let pid_str = if has_own_pid {
+                    format!("{}", m.unwrap().tmux_pid.unwrap())
+                } else {
+                    format!("~{}", tree.root.pid)
+                };
+                let cpu_str = if has_own_pid {
+                    m.map(|m| format!("{:.1}%", m.cpu_percent)).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let mem_str = if has_own_pid {
+                    m.filter(|m| m.memory_bytes > 0)
+                        .map(|m| format!("{:.1}MB", m.memory_bytes as f64 / 1_048_576.0))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let started = if has_own_pid {
+                    m.filter(|m| m.start_time > 0)
+                        .map(|m| format_ts(m.start_time))
+                        .unwrap_or_default()
+                } else {
+                    format_ts(tree.root.start_time)
+                };
+                let uptime = if has_own_pid {
+                    m.filter(|m| m.start_time > 0)
+                        .map(|m| format_uptime(m.start_time))
+                        .unwrap_or_default()
+                } else {
+                    format_uptime(tree.root.start_time)
+                };
                 rows.push(Row::new(vec![
                     "    ".to_string(),
                     pid_str,
@@ -602,6 +677,13 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
                     "✗",
                     format!("{}. TMUX: {}", i + 1, socket_name),
                     format!("   lead:{} {} panes{} — lead dead", lead_pid, pane_count, pid_str),
+                )
+            }
+            ZombieEntry::OrphanShell { socket_name, pane_id, shell_pid } => {
+                (
+                    "·",
+                    format!("{}. SHELL: pane {} (sh:{})", i + 1, pane_id, shell_pid),
+                    format!("   in {} — claude exited", socket_name),
                 )
             }
         };

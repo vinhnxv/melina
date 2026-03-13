@@ -12,7 +12,7 @@ mod status;
 mod tree;
 mod teams;
 
-pub use discovery::{scan, ProcessInfo};
+pub use discovery::{scan, create_process_system, ProcessInfo};
 pub use classify::{ChildKind, classify_child};
 pub use git::GitContext;
 pub use health::{Health, check_health, TeammateHealth, TeammateHealthEntry, TeamHealthReport, check_team_health, ZombieEntry, scan_zombies, KillZombiesResult, kill_zombies, ProcessLookup, ProcessLookupKind, lookup_process, kill_process};

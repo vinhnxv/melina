@@ -1,11 +1,23 @@
 //! Process and teammate health assessment.
 
 use crate::ProcessInfo;
+use crate::discovery::create_process_system;
 use crate::teams::{TeamInfo, TeamMember};
 use serde::Serialize;
-use sysinfo::{System, Pid};
+use sysinfo::{System, Pid, ProcessesToUpdate, ProcessRefreshKind};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Create a lightweight System for kill/lookup operations (no CPU, single refresh).
+fn create_light_system() -> System {
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
+    sys
+}
 
 /// Health status of a process.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -263,6 +275,12 @@ pub enum ZombieEntry {
         pane_count: usize,
         server_pid: Option<u32>,
     },
+    /// An orphan shell pane inside a claude-swarm (no claude child process).
+    OrphanShell {
+        socket_name: String,
+        pane_id: String,
+        shell_pid: u32,
+    },
 }
 
 impl ZombieEntry {
@@ -275,6 +293,9 @@ impl ZombieEntry {
             ZombieEntry::OrphanTmux { socket_name, lead_pid, pane_count, .. } => {
                 format!("ORPHAN TMUX: {} (lead:{}, {} panes)", socket_name, lead_pid, pane_count)
             }
+            ZombieEntry::OrphanShell { socket_name, pane_id, shell_pid } => {
+                format!("ORPHAN SHELL: pane {} (sh:{}) in {}", pane_id, shell_pid, socket_name)
+            }
         }
     }
 
@@ -283,6 +304,7 @@ impl ZombieEntry {
         match self {
             ZombieEntry::Team { .. } => "owner process is dead",
             ZombieEntry::OrphanTmux { .. } => "lead process is dead",
+            ZombieEntry::OrphanShell { .. } => "claude process exited, empty shell remains",
         }
     }
 }
@@ -291,7 +313,7 @@ impl ZombieEntry {
 pub fn scan_zombies() -> Vec<ZombieEntry> {
     use crate::teams::{scan_teams, scan_tmux_servers};
 
-    let sys = System::new_all();
+    let sys = create_process_system();
     let teams = scan_teams();
     let mut entries = Vec::new();
 
@@ -307,7 +329,7 @@ pub fn scan_zombies() -> Vec<ZombieEntry> {
         }
     }
 
-    let tmux_servers = scan_tmux_servers();
+    let tmux_servers = scan_tmux_servers(&sys, true);
     for srv in &tmux_servers {
         if srv.is_orphan() {
             entries.push(ZombieEntry::OrphanTmux {
@@ -316,6 +338,17 @@ pub fn scan_zombies() -> Vec<ZombieEntry> {
                 pane_count: srv.panes.len(),
                 server_pid: srv.server_pid,
             });
+        } else {
+            // Active server — check for orphan shell panes (claude exited, shell remains)
+            for pane in &srv.panes {
+                if !pane.claude_alive && pane.agent_name.is_none() {
+                    entries.push(ZombieEntry::OrphanShell {
+                        socket_name: srv.socket_name.clone(),
+                        pane_id: pane.pane_id.clone(),
+                        shell_pid: pane.shell_pid,
+                    });
+                }
+            }
         }
     }
 
@@ -329,24 +362,27 @@ pub struct KillZombiesResult {
     pub teams_cleaned: usize,
     /// Number of orphan tmux servers killed.
     pub tmux_cleaned: usize,
+    /// Number of orphan shell panes killed.
+    pub shells_cleaned: usize,
     /// Error messages from failed operations.
     pub errors: Vec<String>,
 }
 
 impl KillZombiesResult {
     pub fn total(&self) -> usize {
-        self.teams_cleaned + self.tmux_cleaned
+        self.teams_cleaned + self.tmux_cleaned + self.shells_cleaned
     }
 }
 
-/// Kill all zombie teams and orphan tmux servers.
+/// Kill all zombie teams, orphan tmux servers, and orphan shell panes.
 ///
 /// For zombie teams: kills tmux teammates, removes team/task directories.
 /// For orphan tmux servers: kills the tmux server process.
+/// For orphan shells: kills the empty tmux pane.
 pub fn kill_zombies() -> KillZombiesResult {
     use crate::teams::{scan_teams, scan_tmux_servers, kill_tmux_server};
 
-    let sys = System::new_all();
+    let sys = create_process_system();
     let teams = scan_teams();
     let mut result = KillZombiesResult::default();
 
@@ -395,14 +431,31 @@ pub fn kill_zombies() -> KillZombiesResult {
         }
     }
 
-    // Kill orphan tmux servers
-    let tmux_servers = scan_tmux_servers();
+    // Kill orphan tmux servers and orphan shell panes
+    let tmux_servers = scan_tmux_servers(&sys, true);
     for srv in &tmux_servers {
         if srv.is_orphan() {
             if kill_tmux_server(&srv.socket_name) {
                 result.tmux_cleaned += 1;
             } else {
                 result.errors.push(format!("failed to kill tmux server {}", srv.socket_name));
+            }
+        } else {
+            // Active server — kill orphan shell panes (claude exited, empty shell remains)
+            for pane in &srv.panes {
+                if !pane.claude_alive && pane.agent_name.is_none() {
+                    let digits = &pane.pane_id[1..];
+                    if pane.pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                        let kill_result = std::process::Command::new("tmux")
+                            .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
+                            .output();
+                        if kill_result.is_ok_and(|o| o.status.success()) {
+                            result.shells_cleaned += 1;
+                        } else {
+                            result.errors.push(format!("failed to kill orphan shell pane {} in {}", pane.pane_id, srv.socket_name));
+                        }
+                    }
+                }
             }
         }
     }
@@ -446,7 +499,8 @@ pub enum ProcessLookupKind {
 pub fn lookup_process(pid: u32) -> ProcessLookup {
     use crate::teams::scan_tmux_servers;
 
-    let tmux_servers = scan_tmux_servers();
+    let sys = create_process_system();
+    let tmux_servers = scan_tmux_servers(&sys, true);
 
     // Check if PID matches a tmux pane
     for srv in &tmux_servers {
@@ -467,8 +521,7 @@ pub fn lookup_process(pid: u32) -> ProcessLookup {
         }
     }
 
-    // Look up as regular OS process
-    let sys = System::new_all();
+    // Reuse the same sys for process lookup
     match sys.process(Pid::from_u32(pid)) {
         Some(proc_) => {
             let name = proc_.name().to_string_lossy().to_string();
@@ -538,7 +591,7 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
                 }
             }
             // Fallback: kill the process directly
-            let sys = System::new_all();
+            let sys = create_light_system();
             if let Some(proc_) = sys.process(Pid::from_u32(pid)) {
                 if proc_.kill() {
                     return Ok(format!("Killed PID {} ({})", pid, label));
@@ -547,7 +600,7 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
             Err(format!("Failed to kill PID {} ({})", pid, label))
         }
         ProcessLookupKind::Process { .. } => {
-            let sys = System::new_all();
+            let sys = create_light_system();
             if let Some(proc_) = sys.process(Pid::from_u32(pid)) {
                 if proc_.kill() {
                     return Ok(format!("Killed PID {} ({})", pid, lookup.label));
