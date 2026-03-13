@@ -261,6 +261,12 @@ struct TmuxSocketInfo {
     panes: std::collections::HashMap<String, u32>,
 }
 
+impl Default for TmuxSnapshot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TmuxSnapshot {
     /// Build snapshot from a single `ps -eo pid,args` call + per-socket `tmux list-panes`.
     pub fn new() -> Self {
@@ -938,6 +944,12 @@ pub fn kill_tmux_server(socket: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct ConfigDirCache {
     dirs: Vec<PathBuf>,
+}
+
+impl Default for ConfigDirCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConfigDirCache {

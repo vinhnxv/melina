@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_cached, scan_zombies, kill_zombies, kill_process, ConfigDirCache, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_process, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -189,8 +189,9 @@ fn main() -> Result<()> {
 fn refresh_full(sys: &mut System) -> (Vec<SessionTree>, Vec<TmuxServer>) {
     refresh_process_system(sys);
     let cache = ConfigDirCache::new();
-    let trees = build_trees(scan(sys), sys, false);
-    let tmux_servers = scan_tmux_servers_cached(sys, false, &cache);
+    let snapshot = TmuxSnapshot::new();
+    let trees = build_trees_with_context(scan(sys), sys, false, &cache, &snapshot);
+    let tmux_servers = scan_tmux_servers_with_snapshot(sys, false, Some(&cache), &snapshot);
     (trees, tmux_servers)
 }
 
@@ -203,8 +204,9 @@ fn refresh_quick(
 ) -> (Vec<SessionTree>, Vec<TmuxServer>) {
     refresh_process_system(sys);
     let cache = ConfigDirCache::new();
-    let mut trees = build_trees(scan(sys), sys, true);
-    let mut tmux_servers = scan_tmux_servers_cached(sys, true, &cache);
+    let snapshot = TmuxSnapshot::new();
+    let mut trees = build_trees_with_context(scan(sys), sys, true, &cache, &snapshot);
+    let mut tmux_servers = scan_tmux_servers_with_snapshot(sys, true, Some(&cache), &snapshot);
 
     // Merge cached status from previous full refresh
     for tree in &mut trees {
