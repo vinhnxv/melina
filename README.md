@@ -75,6 +75,18 @@ Without tmux mode, teammates run as background processes that are harder to insp
 
 ## Install
 
+### Quick install (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vinhnx/melina/main/install.sh | bash
+```
+
+Tự động detect OS và architecture (macOS ARM/Intel, Linux x86_64), tải binary từ GitHub Releases và cài vào `/usr/local/bin`. Tuỳ chỉnh đường dẫn cài đặt:
+
+```bash
+INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/vinhnx/melina/main/install.sh | bash
+```
+
 ### Homebrew (macOS / Linux)
 
 ```bash
