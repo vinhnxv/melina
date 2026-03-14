@@ -469,7 +469,7 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
         }
     }
 
-    let tmux_servers = scan_tmux_servers(sys, true);
+    let tmux_servers = scan_tmux_servers(sys, true, 0);
     let now = now_epoch();
     for srv in &tmux_servers {
         if srv.is_orphan() {
@@ -680,7 +680,7 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
     }
 
     // Kill orphan tmux servers and orphan/idle shell panes
-    let tmux_servers = scan_tmux_servers(sys, true);
+    let tmux_servers = scan_tmux_servers(sys, true, 0);
     for srv in &tmux_servers {
         if srv.is_orphan() {
             // Skip young orphan servers if uptime filter is active
@@ -851,7 +851,7 @@ pub fn lookup_process(pid: u32) -> ProcessLookup {
     use crate::teams::scan_tmux_servers;
 
     let sys = create_process_system();
-    let tmux_servers = scan_tmux_servers(&sys, true);
+    let tmux_servers = scan_tmux_servers(&sys, true, 0);
 
     // Check if PID matches a tmux pane
     for srv in &tmux_servers {

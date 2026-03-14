@@ -402,14 +402,24 @@ pub struct TmuxPane {
     pub start_time: u64,
     /// Last meaningful line captured from the tmux pane.
     pub last_line: Option<String>,
+    /// Last N meaningful lines captured from the tmux pane.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub last_lines: Vec<String>,
     /// Derived pane status based on signals (cpu, last_line content).
     pub status: PaneStatus,
+    /// Lowercase status string for JSON consumers.
+    pub status_raw: String,
+    /// Seconds since last meaningful activity (None if active).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_secs: Option<u64>,
+    /// Whether this pane is a zombie (team gone but pane still running).
+    pub is_zombie: bool,
     /// Whether the team config dir still exists on disk.
     pub team_exists: bool,
 }
 
 /// Health/activity status of a tmux pane.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub enum PaneStatus {
     /// Claude process is actively working (CPU > 0).
     Active,
@@ -428,6 +438,16 @@ impl PaneStatus {
             PaneStatus::Idle => "IDLE",
             PaneStatus::Done => "DONE",
             PaneStatus::Shell => "SHELL",
+        }
+    }
+
+    /// Returns lowercase status string for JSON serialization.
+    pub fn status_raw(&self) -> &'static str {
+        match self {
+            PaneStatus::Active => "active",
+            PaneStatus::Idle => "idle",
+            PaneStatus::Done => "done",
+            PaneStatus::Shell => "shell",
         }
     }
 }
@@ -453,31 +473,34 @@ impl TmuxServer {
 pub fn scan_tmux_servers_cached(
     sys: &System,
     skip_status: bool,
+    pane_lines: usize,
     cache: &ConfigDirCache,
 ) -> Vec<TmuxServer> {
     let snapshot = TmuxSnapshot::new();
-    scan_tmux_servers_from_snapshot(sys, skip_status, Some(cache), &snapshot)
+    scan_tmux_servers_from_snapshot(sys, skip_status, pane_lines, Some(cache), &snapshot)
 }
 
 /// Scan all `tmux -L claude-swarm` servers (uncached).
-pub fn scan_tmux_servers(sys: &System, skip_status: bool) -> Vec<TmuxServer> {
+pub fn scan_tmux_servers(sys: &System, skip_status: bool, pane_lines: usize) -> Vec<TmuxServer> {
     let snapshot = TmuxSnapshot::new();
-    scan_tmux_servers_from_snapshot(sys, skip_status, None, &snapshot)
+    scan_tmux_servers_from_snapshot(sys, skip_status, pane_lines, None, &snapshot)
 }
 
 /// Scan tmux servers using a pre-built snapshot (shared with resolve_tmux_pids).
 pub fn scan_tmux_servers_with_snapshot(
     sys: &System,
     skip_status: bool,
+    pane_lines: usize,
     cache: Option<&ConfigDirCache>,
     snapshot: &TmuxSnapshot,
 ) -> Vec<TmuxServer> {
-    scan_tmux_servers_from_snapshot(sys, skip_status, cache, snapshot)
+    scan_tmux_servers_from_snapshot(sys, skip_status, pane_lines, cache, snapshot)
 }
 
 fn scan_tmux_servers_from_snapshot(
     sys: &System,
     skip_status: bool,
+    pane_lines: usize,
     cache: Option<&ConfigDirCache>,
     snapshot: &TmuxSnapshot,
 ) -> Vec<TmuxServer> {
@@ -511,6 +534,7 @@ fn scan_tmux_servers_from_snapshot(
             &socket_info.panes,
             sys,
             skip_status,
+            pane_lines,
             cache,
             shutdown_agents.as_ref(),
         );
@@ -535,6 +559,7 @@ fn query_tmux_panes_from_snapshot(
     pane_map: &std::collections::HashMap<String, u32>,
     sys: &System,
     skip_status: bool,
+    pane_lines: usize,
     cache: Option<&ConfigDirCache>,
     shutdown_agents: Option<&std::collections::HashSet<String>>,
 ) -> Vec<TmuxPane> {
@@ -626,6 +651,13 @@ fn query_tmux_panes_from_snapshot(
                 (line, st)
             };
 
+            // Capture multiple lines if requested
+            let last_lines = if pane_lines > 0 && !skip_status {
+                capture_pane_last_lines(socket, &pane_id, pane_lines)
+            } else {
+                Vec::new()
+            };
+
             TmuxPane {
                 pane_id,
                 shell_pid,
@@ -638,7 +670,11 @@ fn query_tmux_panes_from_snapshot(
                 cpu_percent,
                 start_time,
                 last_line,
+                last_lines,
                 status,
+                status_raw: status.status_raw().to_string(),
+                stale_secs: None,
+                is_zombie: !team_exists,
                 team_exists,
             }
         })
@@ -647,9 +683,21 @@ fn query_tmux_panes_from_snapshot(
 
 /// Capture the last meaningful line from a tmux pane.
 fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
+    capture_pane_last_lines(socket, pane_id, 1).into_iter().next()
+}
+
+/// Capture the last N meaningful lines from a tmux pane.
+/// Returns empty Vec on failure or if no meaningful lines found.
+/// Validates socket format (claude-swarm-*) and pane_id format (%*).
+pub fn capture_pane_last_lines(socket: &str, pane_id: &str, n: usize) -> Vec<String> {
     use std::process::Command;
 
-    let output = Command::new("tmux")
+    // Validate inputs to prevent command injection
+    if !socket.starts_with("claude-swarm-") || !pane_id.starts_with('%') {
+        return Vec::new();
+    }
+
+    let output = match Command::new("tmux")
         .args([
             "-L",
             socket,
@@ -658,14 +706,17 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
             pane_id,
             "-p",
             "-S",
-            "-30",
+            "-50", // Capture more lines to find N meaningful ones
         ])
         .output()
-        .ok()?;
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Find last non-empty, meaningful line (strip control/box-drawing chars)
+    // Find last N non-empty, meaningful lines (strip control/box-drawing chars)
     stdout
         .lines()
         .rev()
@@ -718,7 +769,7 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
 
             Some(trimmed)
         })
-        .next()
+        .take(n)
         .map(|s| {
             if s.len() > 80 {
                 format!("{}…", &s[..79])
@@ -726,6 +777,7 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
                 s
             }
         })
+        .collect()
 }
 
 /// Pre-scan all recent .jsonl files and build a set of agent names that have shutdown_request.
