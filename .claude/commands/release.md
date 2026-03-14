@@ -86,7 +86,7 @@ This triggers the GitHub Actions release workflow.
 
 - Builds binaries for `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`
 - Creates GitHub Release with downloadable tarballs
-- Updates `vinhnx/homebrew-tap` with new version
+- Updates `vinhnxv/homebrew-tap` with new version
 
 ## 9. Verify
 
@@ -105,6 +105,6 @@ If the release workflow fails:
 ## Prerequisites
 
 - `HOMEBREW_TAP_TOKEN` secret must be set in GitHub repo settings
-- Token needs write access to `vinhnx/homebrew-tap` repository
+- Token needs write access to `vinhnxv/homebrew-tap` repository
 
 Report the new version and release URL when done.
