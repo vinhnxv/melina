@@ -1,10 +1,10 @@
 use anyhow::Result;
 use chrono::Local;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use melina_core::{
     AutoCleanup, ChildKind, PaneStatus, TeammateHealth, build_trees, check_team_health,
     create_process_system, format_bytes, format_cleanup_result, format_timestamp, format_uptime,
-    kill_tmux_server, kill_zombies_auto, refresh_process_system, scan, scan_teams,
+    kill_swarm, kill_tmux_server, kill_zombies_auto, refresh_process_system, scan, scan_teams,
     scan_tmux_servers,
 };
 use sysinfo::{Pid, System};
@@ -47,11 +47,45 @@ struct Cli {
     /// Capture last N lines from tmux panes (0-50, default 0)
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=50))]
     pane_lines: Option<u8>,
+
+    /// Subcommands
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Kill an entire claude-swarm team safely
+    KillSwarm {
+        /// Team name (from .claude/teams/<name>/)
+        team_name: String,
+
+        /// Force kill even if target is own session
+        #[arg(long)]
+        force: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+
+    // Handle subcommands
+    if let Some(command) = &cli.command {
+        match command {
+            Commands::KillSwarm {
+                team_name,
+                force,
+                json,
+            } => {
+                return kill_swarm_cmd(team_name, *force, *json);
+            }
+        }
+    }
 
     if let Some(pids) = &cli.kill {
         return kill_pids(pids);
@@ -730,6 +764,71 @@ fn kill_zombies() -> Result<()> {
     println!("  - In-process teammates cannot be killed individually");
     println!("    (they share the Node.js process with the team lead)");
     println!("  - To kill a stuck in-process team: kill <lead PID>");
+
+    Ok(())
+}
+
+/// Kill an entire swarm team by name.
+fn kill_swarm_cmd(team_name: &str, force: bool, json: bool) -> Result<()> {
+    let sys = create_process_system();
+
+    println!("Killing swarm team: {}", team_name);
+    if force {
+        println!("  (force mode: self-kill guard disabled)");
+    }
+
+    match kill_swarm(team_name, &sys, force) {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("\n\x1b[32m✓\x1b[0m Swarm kill complete:");
+                if !result.killed_pids.is_empty() {
+                    println!("  SIGTERM: {:?}", result.killed_pids);
+                }
+                if !result.sigkill_pids.is_empty() {
+                    println!("  SIGKILL: {:?}", result.sigkill_pids);
+                }
+                if !result.already_dead.is_empty() {
+                    println!("  Already dead: {:?}", result.already_dead);
+                }
+                println!(
+                    "  tmux server: {}",
+                    if result.killed_tmux_server {
+                        "killed"
+                    } else {
+                        "N/A"
+                    }
+                );
+                println!(
+                    "  team config: {}",
+                    if result.removed_config {
+                        "removed"
+                    } else {
+                        "kept"
+                    }
+                );
+                if !result.errors.is_empty() {
+                    println!("\x1b[33m!\x1b[0m Errors:");
+                    for e in &result.errors {
+                        println!("  - {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            if json {
+                let err_json = serde_json::json!({
+                    "error": e.to_string(),
+                    "team_name": team_name
+                });
+                println!("{}", serde_json::to_string_pretty(&err_json)?);
+            } else {
+                eprintln!("\x1b[31m✗\x1b[0m Failed to kill swarm: {}", e);
+            }
+            return Err(e);
+        }
+    }
 
     Ok(())
 }
