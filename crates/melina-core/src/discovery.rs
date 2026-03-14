@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
-use sysinfo::{Pid, Process, ProcessesToUpdate, System};
+use sysinfo::{Pid, Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// Raw process info extracted from the OS.
 #[derive(Debug, Clone, Serialize)]
@@ -123,8 +123,22 @@ pub fn create_process_system() -> System {
 
 /// Lightweight refresh for an existing System — no allocations, no sleep.
 /// Call this for subsequent ticks after `create_process_system()`.
+///
+/// Uses `refresh_processes_specifics` with `cmd` and `exe` set to `OnlyIfNotSet`
+/// so that newly discovered processes get their command line populated.
+/// Without this, `sysinfo::refresh_processes` defaults to `ProcessRefreshKind`
+/// that omits `cmd`, leaving new processes with empty `cmd()` — which causes
+/// `is_claude_session()` to miss them since it relies on argv content.
 pub fn refresh_process_system(sys: &mut System) {
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_memory()
+            .with_cpu()
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .with_exe(UpdateKind::OnlyIfNotSet),
+    );
 }
 
 /// Scan all processes and return Claude-related ones.
