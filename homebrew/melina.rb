@@ -1,7 +1,7 @@
 class Melina < Formula
   desc "Claude Code process monitor — track sessions, teammates, MCP servers, and orphans"
   homepage "https://github.com/vinhnxv/melina"
-  version "0.1.0"
+  version "0.2.0"
   license "MIT"
 
   on_macos do

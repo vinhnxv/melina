@@ -114,7 +114,7 @@ Pre-built binaries are available on the [Releases](https://github.com/vinhnxv/me
 
 ```bash
 # Example: download and install on Apple Silicon
-curl -L https://github.com/vinhnxv/melina/releases/latest/download/melina-v0.1.0-aarch64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/vinhnxv/melina/releases/latest/download/melina-v0.2.0-aarch64-apple-darwin.tar.gz | tar xz
 sudo mv melina melina-cli /usr/local/bin/
 ```
 
@@ -146,7 +146,7 @@ cargo build --release
 
 ```bash
 melina              # opens TUI dashboard (q to quit)
-melina-cli --version    # should print: melina-cli 0.1.0
+melina-cli --version    # should print: melina-cli 0.2.0
 ```
 
 ### Uninstall
