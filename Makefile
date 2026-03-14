@@ -1,9 +1,10 @@
-.PHONY: all build install clean run run-cli watch test lint fmt check help kill-zombies kill
+.PHONY: all build install install-skill uninstall clean run run-cli watch test lint fmt check help kill-zombies kill
 
 # --- Config ---
 RUST_TUI := ./target/release/melina
 RUST_CLI := ./target/release/melina-cli
 PREFIX   := /usr/local/bin
+CLAUDE_CONFIG := $(HOME)/.claude
 
 # --- Default ---
 all: build ## Build release binaries
@@ -38,8 +39,27 @@ install: build ## Symlink binaries to /usr/local/bin
 	ln -sf $(abspath $(RUST_CLI)) $(PREFIX)/melina-cli
 	@echo "Done. Run 'melina' (TUI) or 'melina-cli' from anywhere."
 
+install-skill: ## Install /melina skill to ~/.claude/skills/
+	@mkdir -p $(CLAUDE_CONFIG)/skills
+	@cp .claude/skills/melina.md $(CLAUDE_CONFIG)/skills/melina.md
+	@echo "Installed /melina skill to $(CLAUDE_CONFIG)/skills/"
+
+install-hook: ## Install session-end hook for auto-cleanup
+	@mkdir -p $(CLAUDE_CONFIG)/hooks
+	@cp hooks/session-end.sh $(CLAUDE_CONFIG)/hooks/session-end.sh
+	@chmod +x $(CLAUDE_CONFIG)/hooks/session-end.sh
+	@echo "Installed session-end hook to $(CLAUDE_CONFIG)/hooks/"
+
+install-all: install install-skill install-hook ## Install binaries, skill, and hook
+
 uninstall: ## Remove symlinks from /usr/local/bin
 	rm -f $(PREFIX)/melina $(PREFIX)/melina-cli
+
+uninstall-skill: ## Remove /melina skill
+	rm -f $(CLAUDE_CONFIG)/skills/melina.md
+
+uninstall-hook: ## Remove session-end hook
+	rm -f $(CLAUDE_CONFIG)/hooks/session-end.sh
 
 # --- Dev ---
 check: ## Cargo check (fast compile check)
