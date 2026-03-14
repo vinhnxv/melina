@@ -91,7 +91,7 @@ INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/vinhnxv/me
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap vinhnx/tap
+brew tap vinhnxv/tap
 brew install melina
 ```
 
@@ -154,7 +154,7 @@ melina-cli --version    # should print: melina-cli 0.3.0
 
 ```bash
 # Homebrew
-brew uninstall melina && brew untap vinhnx/tap
+brew uninstall melina && brew untap vinhnxv/tap
 
 # Manual / make install
 make uninstall    # removes symlinks from /usr/local/bin
