@@ -141,7 +141,11 @@ mod tests {
         let proc = make_process_info(
             202,
             "2.1.75",
-            vec!["/Users/x/.local/share/claude/versions/2.1.75", "--agent-id", "worker-1"],
+            vec![
+                "/Users/x/.local/share/claude/versions/2.1.75",
+                "--agent-id",
+                "worker-1",
+            ],
         );
         assert!(matches!(classify_child(&proc), ChildKind::Teammate { .. }));
     }

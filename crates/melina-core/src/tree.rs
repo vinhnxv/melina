@@ -202,9 +202,7 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
         // Handle mutex poisoning by recovering the inner data if poisoned.
         // Poisoning only occurs if a panic happened while holding the lock,
         // which shouldn't happen in practice, but we handle it gracefully.
-        let cache = VERSION_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let cache = VERSION_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref map) = *cache
             && let Some(cached) = map.get(binary_path)
         {
@@ -236,9 +234,7 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
     // Store in cache
     // Handle mutex poisoning by recovering the inner data if poisoned.
     {
-        let mut cache = VERSION_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut cache = VERSION_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let map = cache.get_or_insert_with(HashMap::new);
         map.insert(binary_path.to_string(), result.clone());
     }
