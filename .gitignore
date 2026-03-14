@@ -13,7 +13,7 @@ tmp/
 plans/
 todos/
 .claude/arc/
-claude/echoes/
+.claude/echoes/
 .claude/arc-batch-loop.local.md
 .claude/arc-phase-loop.local.md
 .claude/CLAUDE.local.md

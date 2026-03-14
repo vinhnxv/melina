@@ -57,17 +57,15 @@ pub fn scan_teams_cached(cache: &ConfigDirCache) -> Vec<TeamInfo> {
 
     for config_dir in cache.dirs() {
         let teams_dir = config_dir.join("teams");
-        if teams_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&teams_dir) {
+        if teams_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&teams_dir) {
                 for entry in entries.flatten() {
-                    if entry.path().is_dir() {
-                        if let Some(team) = read_team(&entry.path(), config_dir) {
+                    if entry.path().is_dir()
+                        && let Some(team) = read_team(&entry.path(), config_dir) {
                             teams.push(team);
                         }
-                    }
                 }
             }
-        }
     }
 
     teams
@@ -80,17 +78,15 @@ pub fn scan_teams() -> Vec<TeamInfo> {
 
     for config_dir in config_dirs {
         let teams_dir = config_dir.join("teams");
-        if teams_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&teams_dir) {
+        if teams_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&teams_dir) {
                 for entry in entries.flatten() {
-                    if entry.path().is_dir() {
-                        if let Some(team) = read_team(&entry.path(), &config_dir) {
+                    if entry.path().is_dir()
+                        && let Some(team) = read_team(&entry.path(), &config_dir) {
                             teams.push(team);
                         }
-                    }
                 }
             }
-        }
     }
 
     teams
@@ -120,8 +116,8 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let mut task_count = 0;
     let mut task_owners: Vec<String> = Vec::new();
 
-    if tasks_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&tasks_dir) {
+    if tasks_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&tasks_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "json")
@@ -129,22 +125,18 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
                 {
                     task_count += 1;
                     // Read task owner to discover in-process teammates
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(task) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(owner) = task.get("owner").and_then(|v| v.as_str()) {
-                                if !owner.is_empty()
+                    if let Ok(content) = std::fs::read_to_string(&path)
+                        && let Ok(task) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(owner) = task.get("owner").and_then(|v| v.as_str())
+                                && !owner.is_empty()
                                     && owner != "-"
                                     && !task_owners.contains(&owner.to_string())
                                 {
                                     task_owners.push(owner.to_string());
                                 }
-                            }
-                        }
-                    }
                 }
             }
         }
-    }
 
     // Add in-process teammates discovered from task owners but missing from config.json
     // Use fuzzy match: skip if owner is a prefix/substring of any known member name
@@ -321,11 +313,10 @@ impl TmuxSnapshot {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     for pane_line in stdout.lines() {
                         let parts: Vec<&str> = pane_line.splitn(2, '|').collect();
-                        if parts.len() == 2 {
-                            if let Ok(pid) = parts[1].parse::<u32>() {
+                        if parts.len() == 2
+                            && let Ok(pid) = parts[1].parse::<u32>() {
                                 panes.insert(parts[0].to_string(), pid);
                             }
-                        }
                     }
                 }
 
@@ -501,7 +492,7 @@ fn query_tmux_panes_from_snapshot(
     cache: Option<&ConfigDirCache>,
     shutdown_agents: Option<&std::collections::HashSet<String>>,
 ) -> Vec<TmuxPane> {
-    pane_map.iter().filter_map(|(pane_id, &shell_pid)| {
+    pane_map.iter().map(|(pane_id, &shell_pid)| {
         let pane_id = pane_id.clone();
 
         // Look for a claude child process under this shell
@@ -542,7 +533,7 @@ fn query_tmux_panes_from_snapshot(
             };
 
         // team_exists check is cheap (filesystem stat) — always do it
-        let team_exists = team_name.as_ref().map_or(true, |tn| {
+        let team_exists = team_name.as_ref().is_none_or(|tn| {
             let dirs = match cache {
                 Some(c) => c.dirs().to_vec(),
                 None => discover_config_dirs(),
@@ -569,11 +560,11 @@ fn query_tmux_panes_from_snapshot(
             (line, st)
         };
 
-        Some(TmuxPane {
+        TmuxPane {
             pane_id, shell_pid, claude_pid, claude_alive,
             agent_name, agent_type, team_name, memory_bytes, cpu_percent, start_time,
             last_line, status, team_exists,
-        })
+        }
     }).collect()
 }
 
@@ -760,11 +751,10 @@ fn derive_pane_status(
     }
 
     // Signal 3: Check inbox for shutdown/idle messages
-    if let (Some(team), Some(agent)) = (team_name, agent_name) {
-        if check_inbox_has_shutdown(team, agent, cache) {
+    if let (Some(team), Some(agent)) = (team_name, agent_name)
+        && check_inbox_has_shutdown(team, agent, cache) {
             return PaneStatus::Done;
         }
-    }
 
     if cpu_percent < 0.5 {
         return PaneStatus::Idle;

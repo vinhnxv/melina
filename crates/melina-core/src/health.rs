@@ -206,22 +206,19 @@ fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> Team
     let is_cpu_active = member.cpu_percent > TEAMMATE_ACTIVE_CPU_THRESHOLD;
 
     // If stuck tasks exist and inbox is stale (but not actively using CPU)
-    if !stuck_tasks.is_empty() {
-        if let Some(age) = inbox_age {
-            if age > TEAMMATE_STALE_SECS && !is_cpu_active {
+    if !stuck_tasks.is_empty()
+        && let Some(age) = inbox_age
+            && age > TEAMMATE_STALE_SECS && !is_cpu_active {
                 return TeammateHealth::Stuck {
                     task_ids: stuck_tasks,
                 };
             }
-        }
-    }
 
     // If inbox is stale (but not actively using CPU)
-    if let Some(age) = inbox_age {
-        if age > TEAMMATE_STALE_SECS && !is_cpu_active {
+    if let Some(age) = inbox_age
+        && age > TEAMMATE_STALE_SECS && !is_cpu_active {
             return TeammateHealth::Stale { idle_secs: age };
         }
-    }
 
     TeammateHealth::Active
 }
@@ -249,9 +246,8 @@ fn check_teammate_tasks(team: &TeamInfo, member_name: &str) -> (usize, Vec<Strin
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json")
                 && path.file_name().is_some_and(|n| n != ".lock")
-            {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(task) = serde_json::from_str::<serde_json::Value>(&content) {
+                && let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(task) = serde_json::from_str::<serde_json::Value>(&content) {
                         let owner = task.get("owner").and_then(|v| v.as_str()).unwrap_or("");
                         let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -269,8 +265,6 @@ fn check_teammate_tasks(team: &TeamInfo, member_name: &str) -> (usize, Vec<Strin
                             }
                         }
                     }
-                }
-            }
         }
     }
 
@@ -632,15 +626,14 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
                 if dir.exists() {
                     match dir.canonicalize() {
                         Ok(canonical) => {
-                            if canonical.to_string_lossy().contains("/.claude") {
-                                if let Err(e) = std::fs::remove_dir_all(&canonical) {
+                            if canonical.to_string_lossy().contains("/.claude")
+                                && let Err(e) = std::fs::remove_dir_all(&canonical) {
                                     result.errors.push(format!(
                                         "rm {}: {}",
                                         canonical.display(),
                                         e
                                     ));
                                 }
-                            }
                         }
                         Err(e) => {
                             result
@@ -924,11 +917,10 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
             }
             // Fallback: kill the process directly
             let sys = create_light_system();
-            if let Some(proc_) = sys.process(Pid::from_u32(pid)) {
-                if proc_.kill() {
+            if let Some(proc_) = sys.process(Pid::from_u32(pid))
+                && proc_.kill() {
                     return Ok(format!("Killed PID {} ({})", pid, label));
                 }
-            }
             Err(format!("Failed to kill PID {} ({})", pid, label))
         }
         ProcessLookupKind::Process { .. } => {
@@ -953,6 +945,12 @@ pub struct AutoCleanup {
     enabled: bool,
     interval: Duration,
     last_run: Option<Instant>,
+}
+
+impl Default for AutoCleanup {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AutoCleanup {
@@ -989,7 +987,7 @@ impl AutoCleanup {
         if !self.enabled {
             return false;
         }
-        if self.last_run.map_or(true, |t| t.elapsed() >= self.interval) {
+        if self.last_run.is_none_or(|t| t.elapsed() >= self.interval) {
             self.last_run = Some(Instant::now());
             true
         } else {
@@ -1037,7 +1035,7 @@ fn is_pid_alive(pid: u32, sys: &System) -> bool {
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::ZERO)
+        .unwrap_or(std::time::Duration::ZERO)
         .as_secs()
 }
 

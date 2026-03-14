@@ -88,6 +88,7 @@ mod tests {
             name: name.to_string(),
             cmd: cmd.into_iter().map(String::from).collect(),
             cwd: PathBuf::from("/tmp"),
+            exe: None,
             memory_bytes: 0,
             cpu_percent: 0.0,
             start_time: 0,

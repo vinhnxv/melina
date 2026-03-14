@@ -12,6 +12,8 @@ pub struct ProcessInfo {
     pub name: String,
     pub cmd: Vec<String>,
     pub cwd: PathBuf,
+    /// Full path to the executable binary (resolved by the OS).
+    pub exe: Option<PathBuf>,
     pub memory_bytes: u64,
     pub cpu_percent: f32,
     pub start_time: u64,
@@ -30,6 +32,7 @@ impl ProcessInfo {
                 .map(|s| s.to_string_lossy().to_string())
                 .collect(),
             cwd: proc_.cwd().map(|p| p.to_path_buf()).unwrap_or_default(),
+            exe: proc_.exe().map(|p| p.to_path_buf()),
             memory_bytes: proc_.memory(),
             cpu_percent: proc_.cpu_usage(),
             start_time: proc_.start_time(),
@@ -51,6 +54,16 @@ impl ProcessInfo {
             return false;
         }
 
+        // Exclude Claude desktop app (Claude.app) — not Claude Code
+        if cmd_str.contains("claude.app") {
+            return false;
+        }
+
+        // Exclude claude-powerline and similar status-line tools
+        if cmd_str.contains("claude-powerline") || cmd_str.contains("claude_powerline") {
+            return false;
+        }
+
         // Exclude MCP servers (python scripts)
         if cmd_str.contains("server.py") {
             return false;
@@ -61,23 +74,32 @@ impl ProcessInfo {
             return false;
         }
 
-        // First arg must be a claude binary (direct name, node, or versioned path)
+        // First arg must be a claude binary or versioned path — NOT node running
+        // a non-claude script that happens to have "claude" in a path segment.
         self.cmd.first().is_some_and(|c| {
             let c_lower = c.to_lowercase();
-            c_lower.contains("claude") || c_lower.contains("node")
-                || Self::is_claude_versioned_binary(&c_lower)
+            Self::is_claude_binary(&c_lower) || Self::is_claude_versioned_binary(&c_lower)
         })
+    }
+
+    /// Check if a binary path is a Claude Code binary (direct name or path ending in /claude).
+    fn is_claude_binary(path: &str) -> bool {
+        path == "claude" || path.ends_with("/claude")
     }
 
     /// Check if a binary path looks like a Claude versioned binary.
     /// e.g. `/Users/x/.local/share/claude/versions/2.1.75`
-    fn is_claude_versioned_binary(path: &str) -> bool {
+    pub fn is_claude_versioned_binary(path: &str) -> bool {
         path.contains(".local/share/claude/versions/")
     }
 
     /// Check if this is a Claude-related child (MCP server, hook, etc.).
     pub fn is_claude_related(&self) -> bool {
         let cmd_str = self.cmd.join(" ");
+        // Exclude Claude desktop app processes
+        if cmd_str.contains("Claude.app") || cmd_str.contains("claude.app") {
+            return false;
+        }
         cmd_str.contains("claude") || cmd_str.contains(".claude/")
     }
 }
@@ -132,6 +154,7 @@ mod tests {
             name: name.to_string(),
             cmd: cmd.iter().map(|s| s.to_string()).collect(),
             cwd: std::path::PathBuf::new(),
+            exe: None,
             memory_bytes: 0,
             cpu_percent: 0.0,
             start_time: 0,
@@ -148,9 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_claude_session_node() {
+    fn test_is_claude_session_node_running_claude_not_session() {
+        // Node running "claude" as arg — but first arg is "node", not a claude binary
         let info = make_process_info(1234, 1, "node", vec!["node", "claude"]);
-        assert!(info.is_claude_session());
+        assert!(!info.is_claude_session());
     }
 
     #[test]
@@ -205,6 +229,27 @@ mod tests {
                 "--agent-name", "worker-1",
                 "--dangerously-skip-permissions",
             ],
+        );
+        assert!(!info.is_claude_session());
+    }
+
+    #[test]
+    fn test_is_claude_session_excludes_desktop_app() {
+        // Claude.app chrome-native-host is NOT Claude Code
+        let info = make_process_info(
+            26785, 1, "chrome-native-host",
+            vec!["/Applications/Claude.app/Contents/Helpers/chrome-native-host",
+                 "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/"],
+        );
+        assert!(!info.is_claude_session());
+    }
+
+    #[test]
+    fn test_is_claude_session_excludes_powerline() {
+        // claude-powerline is a status line tool, not a Claude Code session
+        let info = make_process_info(
+            21346, 1, "node",
+            vec!["node", "/Users/x/.npm/_npx/abc/node_modules/.bin/claude-powerline", "--style=powerline"],
         );
         assert!(!info.is_claude_session());
     }

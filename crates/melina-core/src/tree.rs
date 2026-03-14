@@ -96,15 +96,87 @@ impl SessionTree {
 use std::sync::Mutex;
 static VERSION_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
-/// Detect Claude Code version by running the binary with --version.
-/// Results are cached per binary path to avoid repeated subprocess calls.
+/// Check if a string looks like a semver version (e.g. "2.1.75").
+fn looks_like_version(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Extract version from a versioned binary path.
+/// e.g. `/Users/x/.local/share/claude/versions/2.1.75` → Some("2.1.75")
+fn extract_version_from_path(path: &str) -> Option<String> {
+    let marker = ".local/share/claude/versions/";
+    if let Some(pos) = path.find(marker) {
+        let version = &path[pos + marker.len()..];
+        // Take until next slash or end
+        let version = version.split('/').next().unwrap_or(version);
+        if looks_like_version(version) {
+            return Some(version.to_string());
+        }
+    }
+    None
+}
+
+/// Query the actual binary path of a running process using proc_pidpath (macOS).
+/// This returns the real binary loaded in memory, not the symlink target.
+#[cfg(target_os = "macos")]
+fn proc_pidpath(pid: u32) -> Option<String> {
+    use std::ffi::c_int;
+    const PROC_PIDPATHINFO_MAXSIZE: u32 = 4096;
+
+    unsafe extern "C" {
+        fn proc_pidpath(pid: c_int, buffer: *mut u8, buffersize: u32) -> c_int;
+    }
+
+    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE as usize];
+    let ret = unsafe { proc_pidpath(pid as c_int, buf.as_mut_ptr(), PROC_PIDPATHINFO_MAXSIZE) };
+    if ret > 0 {
+        buf.truncate(ret as usize);
+        String::from_utf8(buf).ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn proc_pidpath(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Detect Claude Code version for a running session.
+///
+/// Uses 4 strategies in priority order:
+/// 1. proc_pidpath (macOS) — actual binary loaded in memory, most reliable
+/// 2. Extract from versioned binary path in cmd args
+/// 3. Extract from process name (if it looks like a version)
+/// 4. Fall back to running `<binary> --version` (may be wrong if upgraded since launch)
 fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
-    // Find the claude binary path from cmd
+    // Strategy 1: use proc_pidpath to get the actual binary in memory.
+    // Unlike sysinfo's exe() which returns the symlink path, proc_pidpath
+    // returns the resolved path of the binary loaded at exec time.
+    if let Some(path) = proc_pidpath(root.pid)
+        && let Some(version) = extract_version_from_path(&path) {
+            return Some(version);
+        }
+
+    // Strategy 2: extract version from the binary path in cmd args.
+    // Only works when launched via the full versioned path.
+    if let Some(first) = root.cmd.first()
+        && let Some(version) = extract_version_from_path(first) {
+            return Some(version);
+        }
+
+    // Strategy 3: check if the process name is a version number.
+    if looks_like_version(&root.name) {
+        return Some(root.name.clone());
+    }
+
+    // Strategy 4: fall back to running `<binary> --version`
+    // This reflects the *currently installed* version, which may differ from
+    // what this session is actually running if the user upgraded since launch.
     let binary_path = root.cmd.first().and_then(|first| {
         let lower = first.to_lowercase();
-        if lower == "claude" || lower.ends_with("/claude")
-            || ProcessInfo::is_claude_versioned_binary(&lower)
-        {
+        if lower == "claude" || lower.ends_with("/claude") {
             Some(first.as_str())
         } else {
             None
@@ -114,11 +186,10 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
     // Check cache first
     {
         let cache = VERSION_CACHE.lock().ok()?;
-        if let Some(ref map) = *cache {
-            if let Some(cached) = map.get(binary_path) {
+        if let Some(ref map) = *cache
+            && let Some(cached) = map.get(binary_path) {
                 return cached.clone();
             }
-        }
     }
 
     // Run `<binary> --version` and capture output
@@ -277,7 +348,7 @@ pub fn build_trees_with_context(
             .map(|p| {
                 let kind = classify_child(p);
                 let is_mcp = matches!(kind, ChildKind::McpServer { .. });
-                let health = check_health(p, is_mcp, &sys);
+                let health = check_health(p, is_mcp, sys);
                 ChildProcess { info: p.clone(), kind, health }
             })
             .collect();
@@ -286,7 +357,7 @@ pub fn build_trees_with_context(
             .saturating_add(children.iter().map(|c| c.info.memory_bytes).sum::<u64>());
 
         let config_dir = detect_config_dir(root, &children);
-        let root_health = check_health(root, false, &sys);
+        let root_health = check_health(root, false, sys);
 
         // Match teams by session ID found in child shell-snapshot commands,
         // or by config_dir match
@@ -303,7 +374,7 @@ pub fn build_trees_with_context(
         let claude_version = detect_claude_version(root);
 
         // Detect if running inside a user tmux session
-        let host_tmux = detect_host_tmux(root, &tmux_panes, &sys);
+        let host_tmux = detect_host_tmux(root, &tmux_panes, sys);
 
         // Detect Claude session status: skip expensive capture-pane if requested
         let claude_status = if skip_status {
@@ -395,23 +466,22 @@ fn match_teams_to_session(
 
     for team in all_teams {
         // Match by session ID (most precise)
-        if let Some(lead_sid) = &team.lead_session_id {
-            if session_ids.contains(lead_sid) {
+        if let Some(lead_sid) = &team.lead_session_id
+            && session_ids.contains(lead_sid) {
                 matched.push(team.clone());
                 continue;
             }
-        }
 
         // Match by owner_pid in .session file → root PID
         let session_path = team.config_dir
             .join("teams")
             .join(&team.name)
             .join(".session");
-        if let Ok(content) = std::fs::read_to_string(&session_path) {
-            if let Ok(session) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid_str) = session.get("owner_pid").and_then(|v| v.as_str()) {
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        if pid == root.pid {
+        if let Ok(content) = std::fs::read_to_string(&session_path)
+            && let Ok(session) = serde_json::from_str::<serde_json::Value>(&content)
+                && let Some(pid_str) = session.get("owner_pid").and_then(|v| v.as_str())
+                    && let Ok(pid) = pid_str.parse::<u32>()
+                        && pid == root.pid {
                             // Also grab session_id from .session file if we don't have one yet
                             if found_session_id.is_none() {
                                 found_session_id = session.get("session_id")
@@ -421,10 +491,6 @@ fn match_teams_to_session(
                             matched.push(team.clone());
                             continue;
                         }
-                    }
-                }
-            }
-        }
     }
 
     (matched, found_session_id)
@@ -457,4 +523,72 @@ fn detect_config_dir(_root: &ProcessInfo, children: &[ChildProcess]) -> Option<P
 
 fn detect_terminal(_root: &ProcessInfo) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_looks_like_version() {
+        assert!(looks_like_version("2.1.75"));
+        assert!(looks_like_version("2.1"));
+        assert!(looks_like_version("10.0.1"));
+        assert!(!looks_like_version("claude"));
+        assert!(!looks_like_version("2"));
+        assert!(!looks_like_version(""));
+        assert!(!looks_like_version("2.x.1"));
+    }
+
+    #[test]
+    fn test_extract_version_from_path() {
+        assert_eq!(
+            extract_version_from_path("/Users/x/.local/share/claude/versions/2.1.75"),
+            Some("2.1.75".to_string())
+        );
+        assert_eq!(
+            extract_version_from_path("/home/user/.local/share/claude/versions/2.1.76/bin"),
+            Some("2.1.76".to_string())
+        );
+        assert_eq!(extract_version_from_path("claude"), None);
+        assert_eq!(extract_version_from_path("/usr/bin/claude"), None);
+    }
+
+    // Note: detect_claude_version uses proc_pidpath (live OS call) as strategy 1,
+    // so we test the helper functions directly and the fallback strategies.
+
+    #[test]
+    fn test_detect_version_falls_back_to_cmd_path() {
+        // When proc_pidpath returns nothing (fake PID), falls back to cmd path
+        let root = ProcessInfo {
+            pid: 99999999, // non-existent PID so proc_pidpath returns None
+            ppid: 0,
+            name: "2.1.75".to_string(),
+            cmd: vec!["/Users/x/.local/share/claude/versions/2.1.75".to_string()],
+            cwd: PathBuf::new(),
+            exe: None,
+            memory_bytes: 0,
+            cpu_percent: 0.0,
+            start_time: 0,
+            status: "Run".to_string(),
+        };
+        assert_eq!(detect_claude_version(&root), Some("2.1.75".to_string()));
+    }
+
+    #[test]
+    fn test_detect_version_uses_process_name_when_no_path() {
+        let root = ProcessInfo {
+            pid: 99999999,
+            ppid: 0,
+            name: "2.1.75".to_string(),
+            cmd: vec!["claude".to_string()],
+            cwd: PathBuf::new(),
+            exe: None,
+            memory_bytes: 0,
+            cpu_percent: 0.0,
+            start_time: 0,
+            status: "Run".to_string(),
+        };
+        assert_eq!(detect_claude_version(&root), Some("2.1.75".to_string()));
+    }
 }

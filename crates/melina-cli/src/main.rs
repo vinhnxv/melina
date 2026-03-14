@@ -88,12 +88,12 @@ fn render(cli: &Cli) -> Result<()> {
 fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
     refresh_process_system(sys);
     let processes = scan(sys);
-    let trees = build_trees(processes, &sys, false);
+    let trees = build_trees(processes, sys, false);
 
     if cli.json {
         let output = if cli.teams {
             let teams = scan_teams();
-            let health: Vec<_> = teams.iter().map(|t| check_team_health(t, &sys)).collect();
+            let health: Vec<_> = teams.iter().map(|t| check_team_health(t, sys)).collect();
             serde_json::json!({ "sessions": trees, "teams": teams, "team_health": health })
         } else {
             serde_json::json!({ "sessions": trees })
@@ -159,7 +159,7 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
 
         // Teams with teammate health
         for team in &tree.teams {
-            let report = check_team_health(team, &sys);
+            let report = check_team_health(team, sys);
             let mates = team.teammates();
             let zombie_count = report.members.iter()
                 .filter(|m| !m.health.is_healthy())
@@ -244,7 +244,7 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
     // Show orphan teams (not matched to any live session)
     let all_teams = scan_teams();
     let orphan_teams: Vec<_> = all_teams.iter().filter(|t| {
-        let report = check_team_health(t, &sys);
+        let report = check_team_health(t, sys);
         !report.owner_alive
     }).collect();
 
@@ -263,7 +263,7 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
     }
 
     // Show tmux servers (claude-swarm)
-    let tmux_servers = scan_tmux_servers(&sys, false);
+    let tmux_servers = scan_tmux_servers(sys, false);
     if !tmux_servers.is_empty() {
         println!();
         println!("╔═══════════════════════════════════════════════════════════╗");
@@ -335,7 +335,7 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
             println!();
             println!("All Teams:");
             for team in &teams {
-                let report = check_team_health(&team, &sys);
+                let report = check_team_health(team, sys);
                 let status = if report.owner_alive { "ALIVE" } else { "DEAD" };
                 println!("  [{}] {} ({} members, {} tasks) @ {}",
                     status, team.name, team.members.len(), team.task_count,
@@ -376,12 +376,11 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
             println!("Killing tmux pane {} ({}) in {}…", pane_id, label, socket);
 
             // Kill claude process first if alive
-            if let Some(cpid) = claude_pid {
-                if let Some(proc_) = sys.process(Pid::from_u32(*cpid)) {
+            if let Some(cpid) = claude_pid
+                && let Some(proc_) = sys.process(Pid::from_u32(*cpid)) {
                     proc_.kill();
                     println!("  \x1b[32m✓\x1b[0m claude PID {} killed", cpid);
                 }
-            }
 
             // Kill the tmux pane (takes out shell + children)
             let digits = &pane_id[1..];
@@ -393,11 +392,10 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
                     println!("  \x1b[32m✓\x1b[0m tmux pane {} killed (shell PID {})", pane_id, shell_pid);
                 } else {
                     // Fallback: kill shell directly
-                    if let Some(proc_) = sys.process(Pid::from_u32(*shell_pid)) {
-                        if proc_.kill() {
+                    if let Some(proc_) = sys.process(Pid::from_u32(*shell_pid))
+                        && proc_.kill() {
                             println!("  \x1b[32m✓\x1b[0m shell PID {} killed (tmux kill-pane failed)", shell_pid);
                         }
-                    }
                 }
             }
             continue;

@@ -82,9 +82,9 @@ fn main() -> Result<()> {
         let tick_rate = settings.tick_rate();
         let status_interval = settings.status_interval();
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press {
                     // Kill-by-PID dialog mode
                     if let KillDialogState::Selecting { ref entries, selected, .. } = kill_dialog {
                         let count = entries.len();
@@ -137,9 +137,7 @@ fn main() -> Result<()> {
                                 settings_open = false;
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                if settings_selected > 0 {
-                                    settings_selected -= 1;
-                                }
+                                settings_selected = settings_selected.saturating_sub(1);
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
                                 if settings_selected < Settings::FIELD_COUNT - 1 {
@@ -188,11 +186,10 @@ fn main() -> Result<()> {
                     // Debounce helper: skip if same key pressed within 300ms
                     let debounced = |c: char, map: &mut HashMap<char, Instant>| -> bool {
                         let now = Instant::now();
-                        if let Some(last) = map.get(&c) {
-                            if now.duration_since(*last) < debounce_duration {
+                        if let Some(last) = map.get(&c)
+                            && now.duration_since(*last) < debounce_duration {
                                 return true; // too soon, skip
                             }
-                        }
                         map.insert(c, now);
                         false
                     };
@@ -239,8 +236,6 @@ fn main() -> Result<()> {
                         _ => {}
                     }
                 }
-            }
-        }
 
         if last_tick.elapsed() >= tick_rate {
             // Don't auto-refresh while any dialog is open
@@ -452,7 +447,7 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
 
         // Teams & teammates (from config.json) with health
         for team in &tree.teams {
-            let report = check_team_health(team, &sys);
+            let report = check_team_health(team, sys);
             let mates = team.teammates();
             let unhealthy = report.members.iter().filter(|m| !m.health.is_healthy()).count();
             let team_status = if !report.owner_alive {
@@ -1070,7 +1065,6 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
     }
 }
 
-/// Create a centered rect of given width and height within `area`.
 // ── Settings ────────────────────────────────────────────────────
 
 /// Configurable TUI settings, adjustable via the settings popup (s key).
