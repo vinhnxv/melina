@@ -72,6 +72,6 @@ jobs:
         with:
           formula-name: melina
           homebrew-tap: vinhnxv/homebrew-tap
-          download-url: https://github.com/vinhnx/melina/releases/download/${{ github.ref_name }}/melina-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
+          download-url: https://github.com/vinhnxv/melina/releases/download/${{ github.ref_name }}/melina-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
