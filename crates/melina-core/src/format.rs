@@ -41,16 +41,31 @@ pub fn format_timestamp(epoch: u64) -> String {
     if epoch == 0 {
         return "unknown".to_string();
     }
-    // Use the `date` command to convert epoch to local time (avoids chrono dependency)
-    Command::new("date")
+    // Try BSD/macOS date syntax first (`date -r epoch`), then GNU/Linux (`date -d @epoch`)
+    let bsd_result = Command::new("date")
         .args(["-r", &epoch.to_string(), "+%Y-%m-%d %H:%M:%S"])
         .output()
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
+
+    if let Some(result) = bsd_result {
+        return result;
+    }
+
+    // Fallback to GNU/Linux syntax
+    Command::new("date")
+        .args(["-d", &format!("@{epoch}"), "+%Y-%m-%d %H:%M:%S"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
             } else {
                 None
             }
