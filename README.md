@@ -4,17 +4,42 @@ A fast, native process monitor for [Claude Code](https://docs.anthropic.com/en/d
 
 Built in Rust for minimal overhead — melina runs alongside your Claude Code sessions without impacting their performance.
 
+## The Problem
+
+Claude Code's multi-agent workflows (`/rune:strive`, `/rune:arc`, agent teams) spawn complex process trees — sessions, teammates, MCP servers, tmux swarms, hooks, and bash tools. These can easily grow to dozens of concurrent processes.
+
+**The issue: Claude Code doesn't always clean up after itself.** When workflows finish, crash, or get interrupted, many processes are left behind:
+
+- **Zombie teams** — the parent session crashed but teammates keep running, each consuming 200-500 MB of memory
+- **Orphan tmux servers** — `claude-swarm` servers whose lead process died, holding open sockets and child processes
+- **Stale panes** — teammates that finished work but their tmux pane lingers indefinitely
+- **Stuck teammates** — agents with in-progress tasks that stopped making progress, burning CPU cycles
+- **Cascading resource waste** — a single arc run can leave behind 10-20 orphan processes, eating gigabytes of RAM
+
+Over a day of heavy Claude Code usage, this adds up. Your machine slows down, swap usage spikes, and you're left wondering why 8 GB of memory disappeared. The root cause is invisible — these orphan processes don't show up in Claude Code's own UI.
+
 ## Why melina?
 
-Claude Code can spawn complex process trees: multiple sessions, agent teams with dozens of teammates, MCP servers, tmux swarms, hooks, and bash tools. Without visibility, it's easy to end up with:
+melina gives you full visibility into every Claude Code process on your system. It builds a complete picture — sessions, teams, tmux swarms, child processes — and lets you clean up what isn't needed, either manually or automatically.
 
-- **Zombie teams** — the parent session crashed but teammates keep running, consuming memory
-- **Orphan tmux servers** — `claude-swarm` servers whose lead process died
-- **Stale panes** — teammates that finished work but their tmux pane lingers
-- **Stuck teammates** — agents with in-progress tasks that stopped making progress
-- **Resource waste** — dozens of idle processes eating hundreds of MB each
+Think of it as Activity Monitor / htop, but purpose-built for Claude Code's process model.
 
-melina gives you a single dashboard to see everything, understand what's healthy, and clean up what isn't.
+## Recommended: Use `--teammate-mode tmux`
+
+For best results with melina, launch Claude Code with tmux-based teammate mode:
+
+```bash
+claude --teammate-mode tmux
+```
+
+This makes every teammate a tmux pane, which gives melina (and you) much better visibility:
+
+- **Each teammate is individually observable** — see its name, team, status, last output, CPU, and memory
+- **Clean shutdown is possible** — melina can kill individual panes instead of entire process groups
+- **Orphan detection works** — melina detects panes whose parent session died and marks them for cleanup
+- **Shell state is visible** — melina distinguishes between active agents, completed agents, and empty shells
+
+Without tmux mode, teammates run as background processes that are harder to inspect and manage.
 
 ## Features
 
@@ -122,6 +147,20 @@ The settings popup lets you adjust these values live with `←`/`→` keys:
 - Per-pane: agent name, team, status (ACTIVE/IDLE/DONE/SHELL), last output line
 - `[DELETED]` label for panes whose team was cleaned up
 
+## How It Works
+
+melina scans the OS process table (via `sysinfo`) every few seconds and builds a model of your Claude Code world:
+
+1. **Discover** — find all processes whose binary resolves to a Claude Code installation
+2. **Classify** — for each session, classify child processes as MCP servers, teammates, hooks, or bash tools
+3. **Build trees** — link sessions to their parent tmux panes (if any) to reconstruct the full hierarchy
+4. **Scan teams** — read `.claude/teams/` directories to discover agent teams, members, and task states
+5. **Detect swarms** — find `claude-swarm-*` tmux servers and map each pane to its agent
+6. **Health check** — cross-reference running processes against team directories to detect zombies, orphans, and stale panes
+7. **Clean up** — safely terminate dead processes (with confirmation) and remove orphaned team directories
+
+All of this runs in a single Rust binary with no external dependencies beyond the OS.
+
 ## How melina helps manage Claude Code
 
 ### During development
@@ -130,7 +169,7 @@ The settings popup lets you adjust these values live with `←`/`→` keys:
 - Spot resource-heavy sessions before they slow down your machine
 
 ### After workflows complete
-- Identify leftover processes from finished Rune arc/strive/appraise runs
+- Identify leftover processes from finished arc/strive/appraise runs
 - Clean up zombie teams whose parent session was closed
 - Kill stale tmux panes that linger after teammates finish
 
@@ -138,6 +177,11 @@ The settings popup lets you adjust these values live with `←`/`→` keys:
 - Auto-cleanup runs periodically to remove zombies without manual intervention
 - Only targets processes with 30+ min uptime — won't kill things that just started
 - CPU-aware health checks avoid false positives from teammates waiting on API calls
+
+### Real-world impact
+- A typical heavy-usage day can accumulate 2-4 GB of wasted memory from orphan processes
+- melina's auto-cleanup mode keeps this in check without any manual intervention
+- One-shot `melina --kill-zombies` is useful as a quick cleanup after a long coding session
 
 ## Project Structure
 
