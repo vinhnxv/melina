@@ -18,10 +18,10 @@ pub use discovery::{ProcessInfo, create_process_system, refresh_process_system, 
 pub use format::{format_bytes, format_timestamp, format_uptime};
 pub use git::GitContext;
 pub use health::{
-    AutoCleanup, Health, KillZombiesResult, ProcessLookup, ProcessLookupKind, StalePaneReason,
+    AutoCleanup, Health, KillSwarmResult, KillZombiesResult, ProcessLookup, ProcessLookupKind, StalePaneReason,
     TeamHealthReport, TeammateHealth, TeammateHealthEntry, ZombieEntry, check_health,
-    check_team_health, format_cleanup_result, kill_process, kill_zombies, kill_zombies_auto,
-    kill_zombies_with, lookup_process, scan_zombies, scan_zombies_with,
+    check_team_health, format_cleanup_result, is_ancestor_of_self, kill_process, kill_swarm,
+    kill_zombies, kill_zombies_auto, kill_zombies_with, lookup_process, scan_zombies, scan_zombies_with,
 };
 pub use status::{ClaudeSessionStatus, detect_pane_status, detect_status};
 pub use teams::{

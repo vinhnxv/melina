@@ -1092,6 +1092,223 @@ fn file_mtime_epoch(path: &Path) -> Option<u64> {
 
 // ── Tests ─────────────────────────────────────────────────────────
 
+// ── Kill Swarm ───────────────────────────────────────────────────────────────
+
+/// Result of killing an entire swarm team.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct KillSwarmResult {
+    pub team_name: String,
+    pub killed_pids: Vec<u32>,
+    pub sigkill_pids: Vec<u32>,
+    pub already_dead: Vec<u32>,
+    pub killed_tmux_server: bool,
+    pub removed_config: bool,
+    pub errors: Vec<String>,
+}
+
+impl KillSwarmResult {
+    pub fn new(team_name: &str) -> Self {
+        Self {
+            team_name: team_name.to_string(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Check if `target_pid` is an ancestor of the current process.
+/// Walks the parent chain via sysinfo.
+pub fn is_ancestor_of_self(sys: &System, target_pid: u32) -> bool {
+    let my_pid = std::process::id();
+    let mut current = Pid::from_u32(my_pid);
+    let target = Pid::from_u32(target_pid);
+
+    loop {
+        if current == target {
+            return true;
+        }
+        match sys.process(current).and_then(|p| p.parent()) {
+            Some(parent) if parent != current => current = parent,
+            _ => return false,
+        }
+    }
+}
+
+/// Kill an entire claude-swarm team safely.
+///
+/// # Arguments
+/// * `team_name` - Team directory name under .claude/teams/
+/// * `sys` - Process system for PID lookups
+/// * `force` - Override self-kill guard
+///
+/// # Safety
+/// - SIGTERM before SIGKILL (2s grace period)
+/// - Path validation before remove_dir_all
+/// - Self-kill guard (unless --force)
+pub fn kill_swarm(team_name: &str, sys: &System, force: bool) -> anyhow::Result<KillSwarmResult> {
+    use crate::teams::{kill_tmux_server, scan_teams, scan_tmux_servers, TmuxSnapshot};
+    use std::fs;
+    use std::thread;
+    use std::time::Duration;
+
+    let mut result = KillSwarmResult::new(team_name);
+
+    // 1. Find team in scan results
+    let teams = scan_teams();
+    let team = teams
+        .iter()
+        .find(|t| t.name == team_name)
+        .ok_or_else(|| anyhow::anyhow!("Team '{}' not found", team_name))?;
+
+    // 2. Get lead PID and check self-kill guard
+    let config_dir: std::path::PathBuf = std::env::var("CLAUDE_CONFIG_DIR")
+        .map(|s| Path::new(&s).to_path_buf())
+        .unwrap_or_else(|_| dirs::home_dir()
+            .map(|h| h.join(".claude"))
+            .unwrap_or_else(|| Path::new("/tmp/.claude").to_path_buf()));
+
+    let team_dir = config_dir.join("teams").join(team_name);
+    if !team_dir.starts_with(&config_dir) || team_dir == config_dir {
+        anyhow::bail!("Invalid team directory path");
+    }
+
+    // 3. Self-kill guard
+    if !force {
+        // Find lead PID from team config
+        let config_path = team_dir.join("config.json");
+        if let Ok(config_content) = fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_content) {
+                if let Some(lead_pid) = config.get("lead_pid").and_then(|p| p.as_u64()) {
+                    if is_ancestor_of_self(sys, lead_pid as u32) {
+                        anyhow::bail!(
+                            "Refusing to kill own session (lead_pid={} is ancestor). Use --force to override.",
+                            lead_pid
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Collect PIDs from team members
+    let mut pids: Vec<u32> = Vec::new();
+    for member in &team.members {
+        if let Some(pid) = member.tmux_pid {
+            pids.push(pid);
+        }
+        // Also try to find from tmux panes
+    }
+
+    // 5. Find tmux socket for this team
+    let _snapshot = TmuxSnapshot::new();
+    let tmux_servers = scan_tmux_servers(sys, true, 0);
+
+    let socket_name = tmux_servers.iter().find_map(|srv| {
+        let has_team_pane = srv.panes.iter().any(|p| {
+            p.team_name.as_deref() == Some(team_name)
+        });
+        if has_team_pane {
+            Some(srv.socket_name.clone())
+        } else {
+            None
+        }
+    });
+
+    // 6. Collect PIDs from tmux panes
+    if let Some(ref socket) = socket_name {
+        for srv in &tmux_servers {
+            if &srv.socket_name == socket {
+                for pane in &srv.panes {
+                    if pane.team_name.as_deref() == Some(team_name) {
+                        pids.push(pane.shell_pid);
+                        if let Some(claude_pid) = pane.claude_pid {
+                            pids.push(claude_pid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pids.sort();
+    pids.dedup();
+
+    // 7. SIGTERM all PIDs
+    for pid in &pids {
+        match send_signal(*pid, Signal::Term) {
+            Ok(()) => result.killed_pids.push(*pid),
+            Err(e) if e.contains("not found") || e.contains("ESRCH") => {
+                result.already_dead.push(*pid);
+            }
+            Err(e) => result.errors.push(format!("SIGTERM {}: {}", pid, e)),
+        }
+    }
+
+    // 8. Grace period
+    thread::sleep(Duration::from_secs(2));
+
+    // 9. SIGKILL survivors
+    for pid in &pids {
+        if sys.process(Pid::from_u32(*pid)).is_some() {
+            match send_signal(*pid, Signal::Kill) {
+                Ok(()) => result.sigkill_pids.push(*pid),
+                Err(_) => {}
+            }
+        }
+    }
+
+    // 10. Kill tmux server
+    if let Some(ref socket) = socket_name {
+        result.killed_tmux_server = kill_tmux_server(socket);
+    }
+
+    // 11. Remove team config directory
+    match fs::remove_dir_all(&team_dir) {
+        Ok(()) => result.removed_config = true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            result.removed_config = true; // Idempotent
+        }
+        Err(e) => result.errors.push(format!("rm team config: {}", e)),
+    }
+
+    Ok(result)
+}
+
+/// Signal type for process termination.
+enum Signal {
+    Term,
+    Kill,
+}
+
+/// Send a signal to a process.
+fn send_signal(pid: u32, signal: Signal) -> Result<(), String> {
+    use std::process::Command;
+
+    let signal_arg = match signal {
+        Signal::Term => "TERM",
+        Signal::Kill => "KILL",
+    };
+
+    let output = Command::new("kill")
+        .arg(format!("-{}", signal_arg))
+        .arg(pid.to_string())
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("No such process") || stderr.contains("ESRCH") {
+                Err("process not found".to_string())
+            } else {
+                Err(stderr.trim().to_string())
+            }
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
