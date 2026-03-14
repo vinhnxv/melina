@@ -43,6 +43,10 @@ struct Cli {
     /// Enable auto-cleanup in watch mode (every 15 min)
     #[arg(long)]
     auto_cleanup: bool,
+
+    /// Capture last N lines from tmux panes (0-50, default 0)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=50))]
+    pane_lines: Option<u8>,
 }
 
 fn main() -> Result<()> {
@@ -103,10 +107,12 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
     let trees = build_trees(processes, sys, false);
 
     if cli.json {
+        let pane_lines = cli.pane_lines.unwrap_or(0) as usize;
         let output = if cli.teams {
             let teams = scan_teams();
             let health: Vec<_> = teams.iter().map(|t| check_team_health(t, sys)).collect();
-            serde_json::json!({ "sessions": trees, "teams": teams, "team_health": health })
+            let tmux_servers = scan_tmux_servers(sys, false, pane_lines);
+            serde_json::json!({ "sessions": trees, "teams": teams, "team_health": health, "tmux_servers": tmux_servers })
         } else {
             serde_json::json!({ "sessions": trees })
         };
@@ -335,7 +341,8 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
     }
 
     // Show tmux servers (claude-swarm)
-    let tmux_servers = scan_tmux_servers(sys, false);
+    let pane_lines = cli.pane_lines.unwrap_or(0) as usize;
+    let tmux_servers = scan_tmux_servers(sys, false, pane_lines);
     if !tmux_servers.is_empty() {
         println!();
         println!("╔═══════════════════════════════════════════════════════════╗");
@@ -458,7 +465,7 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
     let sys = create_process_system();
 
     // Build tmux pane map to find which pane a process belongs to
-    let tmux_servers = scan_tmux_servers(&sys, true);
+    let tmux_servers = scan_tmux_servers(&sys, true, 0);
 
     for &pid in pids {
         let sysinfo_pid = Pid::from_u32(pid);
@@ -659,7 +666,7 @@ fn kill_zombies() -> Result<()> {
     }
 
     // Also kill orphan tmux servers and orphan shell panes
-    let tmux_servers = scan_tmux_servers(&sys, true);
+    let tmux_servers = scan_tmux_servers(&sys, true, 0);
     let mut tmux_cleaned = 0;
     let mut shells_cleaned = 0;
     for srv in &tmux_servers {

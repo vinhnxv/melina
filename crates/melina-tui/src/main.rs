@@ -316,7 +316,7 @@ fn refresh_full(sys: &mut System) -> (Vec<SessionTree>, Vec<TmuxServer>) {
     let cache = ConfigDirCache::new();
     let snapshot = TmuxSnapshot::new();
     let trees = build_trees_with_context(scan(sys), sys, false, &cache, &snapshot);
-    let tmux_servers = scan_tmux_servers_with_snapshot(sys, false, Some(&cache), &snapshot);
+    let tmux_servers = scan_tmux_servers_with_snapshot(sys, false, 0, Some(&cache), &snapshot);
     (trees, tmux_servers)
 }
 
@@ -333,7 +333,7 @@ fn refresh_quick(
     let cache = ConfigDirCache::new();
     let snapshot = TmuxSnapshot::new();
     let mut trees = build_trees_with_context(scan(sys), sys, true, &cache, &snapshot);
-    let mut tmux_servers = scan_tmux_servers_with_snapshot(sys, true, Some(&cache), &snapshot);
+    let mut tmux_servers = scan_tmux_servers_with_snapshot(sys, true, 0, Some(&cache), &snapshot);
 
     // Build HashMaps for O(1) lookups (avoids O(n²) nested finds)
     let prev_tree_map: HashMap<u32, &SessionTree> =
@@ -369,7 +369,7 @@ fn refresh_quick(
                     }
                     if pane.status != PaneStatus::Shell {
                         // Preserve richer status from full refresh (e.g. Done vs Idle)
-                        pane.status = prev_pane.status.clone();
+                        pane.status = prev_pane.status;
                     }
                     pane.team_exists = prev_pane.team_exists;
                 }
