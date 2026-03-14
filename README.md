@@ -75,6 +75,46 @@ Without tmux mode, teammates run as background processes that are harder to insp
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap vinhnx/tap
+brew install melina
+```
+
+This installs both `melina` (CLI) and `melina-tui` (dashboard).
+
+To upgrade:
+
+```bash
+brew upgrade melina
+```
+
+### Download binary
+
+Pre-built binaries are available on the [Releases](https://github.com/vinhnx/melina/releases) page for:
+
+| Platform | Architecture | File |
+|----------|-------------|------|
+| macOS | Apple Silicon (M1/M2/M3/M4) | `melina-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| macOS | Intel | `melina-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
+| Linux | x86_64 | `melina-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+
+```bash
+# Example: download and install on Apple Silicon
+curl -L https://github.com/vinhnx/melina/releases/latest/download/melina-v0.1.0-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv melina melina-tui /usr/local/bin/
+```
+
+### Cargo install
+
+```bash
+cargo install --git https://github.com/vinhnx/melina.git melina-cli
+cargo install --git https://github.com/vinhnx/melina.git melina-tui
+```
+
+### From source
+
 Requires Rust 1.85+ (edition 2024).
 
 ```bash
@@ -88,6 +128,23 @@ Or build manually:
 ```bash
 cargo build --release
 # Binaries at target/release/melina and target/release/melina-tui
+```
+
+### Verify installation
+
+```bash
+melina --version    # should print: melina 0.1.0
+melina-tui          # opens TUI dashboard (q to quit)
+```
+
+### Uninstall
+
+```bash
+# Homebrew
+brew uninstall melina && brew untap vinhnx/tap
+
+# Manual / make install
+make uninstall    # removes symlinks from /usr/local/bin
 ```
 
 ## Usage
