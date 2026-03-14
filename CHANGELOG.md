@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-15
+
+### Added
+- **`/melina` Claude Code skill** — comprehensive process management skill for Claude Code with commands: status, list, kill, cleanup, kill-swarm, watch
+- **`kill-swarm` subcommand** — safely terminate an entire agent team (tmux server + teammates + config) with self-kill guard and `--force` override
+- **`--pane-lines <N>` flag** — capture last N lines from tmux panes for richer status display in CLI and TUI
+- **Rich pane status preservation** — TUI quick refresh preserves last_line and status from full refresh for smoother updates
+
+### Fixed
+- `format_timestamp` now works on both BSD (macOS) and GNU (Linux) systems
+
 ## [0.2.1] - 2026-03-14
 
 ### Fixed
@@ -65,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CPU usage always showing 0% for tmux panes
 - Address audit findings: orphan detection, performance, safety
 
+[0.3.0]: https://github.com/vinhnxv/melina/releases/tag/v0.3.0
 [0.2.1]: https://github.com/vinhnxv/melina/releases/tag/v0.2.1
 [0.2.0]: https://github.com/vinhnxv/melina/releases/tag/v0.2.0
 [0.1.0]: https://github.com/vinhnxv/melina/releases/tag/v0.1.0
