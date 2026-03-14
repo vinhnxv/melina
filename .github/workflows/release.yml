@@ -71,7 +71,7 @@ jobs:
         uses: mislav/bump-homebrew-formula-action@v3
         with:
           formula-name: melina
-          homebrew-tap: vinhnx/homebrew-tap
+          homebrew-tap: vinhnxv/homebrew-tap
           download-url: https://github.com/vinhnx/melina/releases/download/${{ github.ref_name }}/melina-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
