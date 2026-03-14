@@ -683,7 +683,9 @@ fn query_tmux_panes_from_snapshot(
 
 /// Capture the last meaningful line from a tmux pane.
 fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
-    capture_pane_last_lines(socket, pane_id, 1).into_iter().next()
+    capture_pane_last_lines(socket, pane_id, 1)
+        .into_iter()
+        .next()
 }
 
 /// Capture the last N meaningful lines from a tmux pane.

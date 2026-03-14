@@ -77,7 +77,11 @@ fn main() -> Result<()> {
     // Handle subcommands
     if let Some(command) = &cli.command {
         match command {
-            Commands::KillSwarm { team_name, force, json } => {
+            Commands::KillSwarm {
+                team_name,
+                force,
+                json,
+            } => {
                 return kill_swarm_cmd(team_name, *force, *json);
             }
         }
@@ -790,11 +794,19 @@ fn kill_swarm_cmd(team_name: &str, force: bool, json: bool) -> Result<()> {
                 }
                 println!(
                     "  tmux server: {}",
-                    if result.killed_tmux_server { "killed" } else { "N/A" }
+                    if result.killed_tmux_server {
+                        "killed"
+                    } else {
+                        "N/A"
+                    }
                 );
                 println!(
                     "  team config: {}",
-                    if result.removed_config { "removed" } else { "kept" }
+                    if result.removed_config {
+                        "removed"
+                    } else {
+                        "kept"
+                    }
                 );
                 if !result.errors.is_empty() {
                     println!("\x1b[33m!\x1b[0m Errors:");

@@ -1145,7 +1145,7 @@ pub fn is_ancestor_of_self(sys: &System, target_pid: u32) -> bool {
 /// - Path validation before remove_dir_all
 /// - Self-kill guard (unless --force)
 pub fn kill_swarm(team_name: &str, sys: &System, force: bool) -> anyhow::Result<KillSwarmResult> {
-    use crate::teams::{kill_tmux_server, scan_teams, scan_tmux_servers, TmuxSnapshot};
+    use crate::teams::{TmuxSnapshot, kill_tmux_server, scan_teams, scan_tmux_servers};
     use std::fs;
     use std::thread;
     use std::time::Duration;
@@ -1162,9 +1162,11 @@ pub fn kill_swarm(team_name: &str, sys: &System, force: bool) -> anyhow::Result<
     // 2. Get lead PID and check self-kill guard
     let config_dir: std::path::PathBuf = std::env::var("CLAUDE_CONFIG_DIR")
         .map(|s| Path::new(&s).to_path_buf())
-        .unwrap_or_else(|_| dirs::home_dir()
-            .map(|h| h.join(".claude"))
-            .unwrap_or_else(|| Path::new("/tmp/.claude").to_path_buf()));
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .map(|h| h.join(".claude"))
+                .unwrap_or_else(|| Path::new("/tmp/.claude").to_path_buf())
+        });
 
     let team_dir = config_dir.join("teams").join(team_name);
     if !team_dir.starts_with(&config_dir) || team_dir == config_dir {
@@ -1203,9 +1205,10 @@ pub fn kill_swarm(team_name: &str, sys: &System, force: bool) -> anyhow::Result<
     let tmux_servers = scan_tmux_servers(sys, true, 0);
 
     let socket_name = tmux_servers.iter().find_map(|srv| {
-        let has_team_pane = srv.panes.iter().any(|p| {
-            p.team_name.as_deref() == Some(team_name)
-        });
+        let has_team_pane = srv
+            .panes
+            .iter()
+            .any(|p| p.team_name.as_deref() == Some(team_name));
         if has_team_pane {
             Some(srv.socket_name.clone())
         } else {
