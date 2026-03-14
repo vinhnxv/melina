@@ -369,7 +369,7 @@ fn refresh_quick(
                     }
                     if pane.status != PaneStatus::Shell {
                         // Preserve richer status from full refresh (e.g. Done vs Idle)
-                        pane.status = prev_pane.status.clone();
+                        pane.status = prev_pane.status;
                     }
                     pane.team_exists = prev_pane.team_exists;
                 }

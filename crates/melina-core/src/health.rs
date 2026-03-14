@@ -1177,17 +1177,15 @@ pub fn kill_swarm(team_name: &str, sys: &System, force: bool) -> anyhow::Result<
     if !force {
         // Find lead PID from team config
         let config_path = team_dir.join("config.json");
-        if let Ok(config_content) = fs::read_to_string(&config_path) {
-            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_content) {
-                if let Some(lead_pid) = config.get("lead_pid").and_then(|p| p.as_u64()) {
-                    if is_ancestor_of_self(sys, lead_pid as u32) {
-                        anyhow::bail!(
-                            "Refusing to kill own session (lead_pid={} is ancestor). Use --force to override.",
-                            lead_pid
-                        );
-                    }
-                }
-            }
+        if let Ok(config_content) = fs::read_to_string(&config_path)
+            && let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_content)
+            && let Some(lead_pid) = config.get("lead_pid").and_then(|p| p.as_u64())
+            && is_ancestor_of_self(sys, lead_pid as u32)
+        {
+            anyhow::bail!(
+                "Refusing to kill own session (lead_pid={} is ancestor). Use --force to override.",
+                lead_pid
+            );
         }
     }
 
@@ -1251,11 +1249,10 @@ pub fn kill_swarm(team_name: &str, sys: &System, force: bool) -> anyhow::Result<
 
     // 9. SIGKILL survivors
     for pid in &pids {
-        if sys.process(Pid::from_u32(*pid)).is_some() {
-            match send_signal(*pid, Signal::Kill) {
-                Ok(()) => result.sigkill_pids.push(*pid),
-                Err(_) => {}
-            }
+        if sys.process(Pid::from_u32(*pid)).is_some()
+            && let Ok(()) = send_signal(*pid, Signal::Kill)
+        {
+            result.sigkill_pids.push(*pid);
         }
     }
 
