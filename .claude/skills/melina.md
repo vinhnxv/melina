@@ -25,7 +25,7 @@ This skill requires `melina-cli` to be installed and available in PATH.
 
 **Install via Homebrew:**
 ```bash
-brew install vinhnx/tap/melina
+brew install vinhnxv/tap/melina
 ```
 
 **Install via Cargo:**
@@ -48,7 +48,7 @@ Read-only snapshot of all Claude Code sessions and swarm teams.
 
 ```bash
 if ! command -v melina-cli &>/dev/null; then
-  echo "melina-cli not found. Install with: brew install vinhnx/tap/melina"
+  echo "melina-cli not found. Install with: brew install vinhnxv/tap/melina"
   exit 1
 fi
 timeout 10 melina-cli --json --teams --pane-lines 5

@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT LICENSE file
 - CI workflow (fmt check, clippy, tests, multi-OS build)
 - GitHub Actions release workflow with Homebrew tap auto-update
-- Homebrew formula (`brew tap vinhnx/tap && brew install melina`)
+- Homebrew formula (`brew tap vinhnxv/tap && brew install melina`)
 - `curl | bash` installer script with OS/arch auto-detection
 - `--version` flag for CLI
 - `exe` field on ProcessInfo for binary path tracking

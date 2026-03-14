@@ -12,7 +12,7 @@ edition = "2024"
 authors = ["vinhnxv"]
 license = "MIT"
 description = "Claude Code process monitor — track sessions, teammates, MCP servers, and orphans"
-repository = "https://github.com/vinhnx/melina"
+repository = "https://github.com/vinhnxv/melina"
 
 [workspace.dependencies]
 melina-core = { path = "crates/melina-core" }
