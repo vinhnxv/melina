@@ -78,13 +78,13 @@ Without tmux mode, teammates run as background processes that are harder to insp
 ### Quick install (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vinhnx/melina/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/vinhnxv/melina/main/install.sh | bash
 ```
 
 Tự động detect OS và architecture (macOS ARM/Intel, Linux x86_64), tải binary từ GitHub Releases và cài vào `/usr/local/bin`. Tuỳ chỉnh đường dẫn cài đặt:
 
 ```bash
-INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/vinhnx/melina/main/install.sh | bash
+INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/vinhnxv/melina/main/install.sh | bash
 ```
 
 ### Homebrew (macOS / Linux)
@@ -94,7 +94,7 @@ brew tap vinhnx/tap
 brew install melina
 ```
 
-This installs both `melina` (CLI) and `melina-tui` (dashboard).
+This installs both `melina` (TUI dashboard) and `melina-cli`.
 
 To upgrade:
 
@@ -104,7 +104,7 @@ brew upgrade melina
 
 ### Download binary
 
-Pre-built binaries are available on the [Releases](https://github.com/vinhnx/melina/releases) page for:
+Pre-built binaries are available on the [Releases](https://github.com/vinhnxv/melina/releases) page for:
 
 | Platform | Architecture | File |
 |----------|-------------|------|
@@ -114,15 +114,15 @@ Pre-built binaries are available on the [Releases](https://github.com/vinhnx/mel
 
 ```bash
 # Example: download and install on Apple Silicon
-curl -L https://github.com/vinhnx/melina/releases/latest/download/melina-v0.1.0-aarch64-apple-darwin.tar.gz | tar xz
-sudo mv melina melina-tui /usr/local/bin/
+curl -L https://github.com/vinhnxv/melina/releases/latest/download/melina-v0.1.0-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv melina melina-cli /usr/local/bin/
 ```
 
 ### Cargo install
 
 ```bash
-cargo install --git https://github.com/vinhnx/melina.git melina-cli
-cargo install --git https://github.com/vinhnx/melina.git melina-tui
+cargo install --git https://github.com/vinhnxv/melina.git melina-tui   # melina (TUI dashboard)
+cargo install --git https://github.com/vinhnxv/melina.git melina-cli   # melina-cli
 ```
 
 ### From source
@@ -130,7 +130,7 @@ cargo install --git https://github.com/vinhnx/melina.git melina-tui
 Requires Rust 1.85+ (edition 2024).
 
 ```bash
-git clone https://github.com/vinhnx/melina.git
+git clone https://github.com/vinhnxv/melina.git
 cd melina
 make install    # builds release + symlinks to /usr/local/bin
 ```
@@ -139,14 +139,14 @@ Or build manually:
 
 ```bash
 cargo build --release
-# Binaries at target/release/melina and target/release/melina-tui
+# Binaries at target/release/melina (TUI) and target/release/melina-cli
 ```
 
 ### Verify installation
 
 ```bash
-melina --version    # should print: melina 0.1.0
-melina-tui          # opens TUI dashboard (q to quit)
+melina              # opens TUI dashboard (q to quit)
+melina-cli --version    # should print: melina-cli 0.1.0
 ```
 
 ### Uninstall
@@ -161,23 +161,10 @@ make uninstall    # removes symlinks from /usr/local/bin
 
 ## Usage
 
-### CLI
+### TUI Dashboard (default)
 
 ```bash
-melina                              # One-shot snapshot
-melina --watch 2                    # Live refresh every 2 seconds
-melina --watch 2 --auto-cleanup     # Auto-refresh + periodic zombie cleanup
-melina --json                       # JSON output (pipe to jq, etc.)
-melina --json --teams               # Include team details in JSON
-melina --kill-zombies               # Clean up dead teams + orphan tmux servers
-melina --kill 12345                 # Kill a specific Claude process by PID
-melina --kill 12345 --kill 67890    # Kill multiple PIDs
-```
-
-### TUI Dashboard
-
-```bash
-melina-tui
+melina
 ```
 
 Interactive dashboard with Solarized Dark color palette:
@@ -201,6 +188,19 @@ The settings popup lets you adjust these values live with `←`/`→` keys:
 | Status refresh | 10s | 5, 10, 15, 20, 30, 60s |
 | Cleanup interval | 15min | 5, 10, 15, 30, 60min |
 | Status display | 5s | 3, 5, 8, 10, 15s |
+
+### CLI
+
+```bash
+melina-cli                              # One-shot snapshot
+melina-cli --watch 2                    # Live refresh every 2 seconds
+melina-cli --watch 2 --auto-cleanup     # Auto-refresh + periodic zombie cleanup
+melina-cli --json                       # JSON output (pipe to jq, etc.)
+melina-cli --json --teams               # Include team details in JSON
+melina-cli --kill-zombies               # Clean up dead teams + orphan tmux servers
+melina-cli --kill 12345                 # Kill a specific Claude process by PID
+melina-cli --kill 12345 --kill 67890    # Kill multiple PIDs
+```
 
 #### What you see
 

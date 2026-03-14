@@ -5,7 +5,7 @@ edition.workspace = true
 description = "CLI interface — one-shot snapshot or watch mode"
 
 [[bin]]
-name = "melina"
+name = "melina-cli"
 path = "src/main.rs"
 
 [dependencies]

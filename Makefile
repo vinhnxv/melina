@@ -1,8 +1,8 @@
-.PHONY: all build install clean run run-tui watch test lint fmt check help kill-zombies kill
+.PHONY: all build install clean run run-cli watch test lint fmt check help kill-zombies kill
 
 # --- Config ---
-RUST_BIN := ./target/release/melina
-RUST_TUI := ./target/release/melina-tui
+RUST_TUI := ./target/release/melina
+RUST_CLI := ./target/release/melina-cli
 PREFIX   := /usr/local/bin
 
 # --- Default ---
@@ -13,33 +13,33 @@ build: ## Build Rust binaries (release)
 	cargo build --release
 
 # --- Run ---
-run: build ## Run CLI (one-shot snapshot)
-	$(RUST_BIN)
-
-run-tui: build ## Run TUI dashboard
+run: build ## Run TUI dashboard (default)
 	$(RUST_TUI)
 
+run-cli: build ## Run CLI (one-shot snapshot)
+	$(RUST_CLI)
+
 watch: build ## Watch mode (refresh every 2s)
-	$(RUST_BIN) --watch 2
+	$(RUST_CLI) --watch 2
 
 json: build ## JSON output with teams
-	$(RUST_BIN) --json --teams
+	$(RUST_CLI) --json --teams
 
 kill-zombies: build ## Kill zombie teams + orphan tmux servers
-	$(RUST_BIN) --kill-zombies
+	$(RUST_CLI) --kill-zombies
 
 kill: build ## Kill process by PID (usage: make kill PID=12345)
-	$(RUST_BIN) --kill $(PID)
+	$(RUST_CLI) --kill $(PID)
 
 # --- Install ---
 install: build ## Symlink binaries to /usr/local/bin
 	@echo "Symlinking melina -> $(PREFIX)/melina"
-	ln -sf $(abspath $(RUST_BIN)) $(PREFIX)/melina
-	ln -sf $(abspath $(RUST_TUI)) $(PREFIX)/melina-tui
-	@echo "Done. Run 'melina' or 'melina-tui' from anywhere."
+	ln -sf $(abspath $(RUST_TUI)) $(PREFIX)/melina
+	ln -sf $(abspath $(RUST_CLI)) $(PREFIX)/melina-cli
+	@echo "Done. Run 'melina' (TUI) or 'melina-cli' from anywhere."
 
 uninstall: ## Remove symlinks from /usr/local/bin
-	rm -f $(PREFIX)/melina $(PREFIX)/melina-tui
+	rm -f $(PREFIX)/melina $(PREFIX)/melina-cli
 
 # --- Dev ---
 check: ## Cargo check (fast compile check)

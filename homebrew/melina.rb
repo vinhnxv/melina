@@ -21,7 +21,7 @@ class Melina < Formula
 
   def install
     bin.install "melina"
-    bin.install "melina-tui"
+    bin.install "melina-cli"
   end
 
   test do

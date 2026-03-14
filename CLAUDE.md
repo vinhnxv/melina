@@ -9,29 +9,29 @@ Rust workspace that scans the OS process table to discover and monitor all runni
 ```
 crates/
   melina-core/   — Library: process discovery, classification, tree building, health checks, team scanning
-  melina-cli/    — Binary: CLI with one-shot, watch, JSON, and kill modes
-  melina-tui/    — Binary: interactive ratatui terminal dashboard
+  melina-cli/    — Binary (melina-cli): CLI with one-shot, watch, JSON, and kill modes
+  melina-tui/    — Binary (melina): interactive ratatui terminal dashboard (default)
 ```
 
 ## Build & Run
 
 ```bash
-cargo build --release        # Build all binaries
-cargo run --bin melina        # Run CLI
-cargo run --bin melina-tui    # Run TUI dashboard
-make install                  # Symlink to /usr/local/bin
+cargo build --release            # Build all binaries
+cargo run --bin melina            # Run TUI dashboard (default)
+cargo run --bin melina-cli        # Run CLI
+make install                      # Symlink to /usr/local/bin
 ```
 
 ## Key Commands
 
 ```bash
-melina                    # One-shot snapshot
-melina --watch 2          # Auto-refresh every 2s
-melina --json --teams     # JSON output with team info
-melina --kill-zombies     # Clean up dead teams + orphan tmux servers
-melina --kill <PID>       # Kill a Claude process by PID
-melina --watch 2 --auto-cleanup  # Auto-refresh + periodic cleanup every 15 min
-melina-tui                # Interactive dashboard (q=quit, r=refresh, a=auto-cleanup)
+melina                    # Interactive TUI dashboard (q=quit, r=refresh, a=auto-cleanup)
+melina-cli                # One-shot snapshot
+melina-cli --watch 2      # Auto-refresh every 2s
+melina-cli --json --teams # JSON output with team info
+melina-cli --kill-zombies # Clean up dead teams + orphan tmux servers
+melina-cli --kill <PID>   # Kill a Claude process by PID
+melina-cli --watch 2 --auto-cleanup  # Auto-refresh + periodic cleanup every 15 min
 ```
 
 ## Code Map

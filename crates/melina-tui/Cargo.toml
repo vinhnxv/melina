@@ -5,7 +5,7 @@ edition.workspace = true
 description = "Terminal UI — live dashboard with ratatui"
 
 [[bin]]
-name = "melina-tui"
+name = "melina"
 path = "src/main.rs"
 
 [dependencies]

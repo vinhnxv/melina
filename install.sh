@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="vinhnx/melina"
+REPO="vinhnxv/melina"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and architecture
@@ -46,12 +46,12 @@ tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
 
 # Install
 if [ -w "$INSTALL_DIR" ]; then
-  mv "${TMPDIR}/melina" "${TMPDIR}/melina-tui" "$INSTALL_DIR/"
+  mv "${TMPDIR}/melina" "${TMPDIR}/melina-cli" "$INSTALL_DIR/"
 else
   echo "Need sudo to install to ${INSTALL_DIR}"
-  sudo mv "${TMPDIR}/melina" "${TMPDIR}/melina-tui" "$INSTALL_DIR/"
+  sudo mv "${TMPDIR}/melina" "${TMPDIR}/melina-cli" "$INSTALL_DIR/"
 fi
 
 echo "Done! Installed:"
 echo "  ${INSTALL_DIR}/melina"
-echo "  ${INSTALL_DIR}/melina-tui"
+echo "  ${INSTALL_DIR}/melina-cli"

@@ -5,7 +5,7 @@ use melina_core::{scan, build_trees, create_process_system, refresh_process_syst
 use sysinfo::{Pid, System};
 
 #[derive(Parser)]
-#[command(name = "melina", about = "Claude Code process monitor", version)]
+#[command(name = "melina-cli", about = "Claude Code process monitor (CLI)", version)]
 struct Cli {
     /// Output as JSON instead of human-readable
     #[arg(long)]
