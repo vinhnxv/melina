@@ -136,6 +136,11 @@ fn proc_pidpath(pid: u32) -> Option<String> {
     }
 
     let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: proc_pidpath is a documented macOS syscall that writes to the provided buffer.
+    // - Buffer is properly sized at PROC_PIDPATHINFO_MAXSIZE (4096 bytes)
+    // - Return value is checked (> 0) before using buffer contents
+    // - UTF-8 validity is verified via String::from_utf8().ok()
+    // - The syscall is thread-safe (no global state mutation)
     let ret = unsafe { proc_pidpath(pid as c_int, buf.as_mut_ptr(), PROC_PIDPATHINFO_MAXSIZE) };
     if ret > 0 {
         buf.truncate(ret as usize);
@@ -194,7 +199,12 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
 
     // Check cache first
     {
-        let cache = VERSION_CACHE.lock().ok()?;
+        // Handle mutex poisoning by recovering the inner data if poisoned.
+        // Poisoning only occurs if a panic happened while holding the lock,
+        // which shouldn't happen in practice, but we handle it gracefully.
+        let cache = VERSION_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(ref map) = *cache
             && let Some(cached) = map.get(binary_path)
         {
@@ -224,7 +234,11 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
         });
 
     // Store in cache
-    if let Ok(mut cache) = VERSION_CACHE.lock() {
+    // Handle mutex poisoning by recovering the inner data if poisoned.
+    {
+        let mut cache = VERSION_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let map = cache.get_or_insert_with(HashMap::new);
         map.insert(binary_path.to_string(), result.clone());
     }

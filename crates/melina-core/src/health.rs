@@ -804,6 +804,11 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
 
 /// Kill a tmux pane by socket name and pane ID. Returns true on success.
 fn kill_tmux_pane(socket_name: &str, pane_id: &str) -> bool {
+    // Validate socket_name format to prevent command injection
+    if !socket_name.starts_with("claude-swarm-") {
+        return false;
+    }
+    // Validate pane_id format
     if !pane_id.starts_with('%') || pane_id.len() <= 1 {
         return false;
     }

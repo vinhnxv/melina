@@ -93,9 +93,19 @@ fn has_input_field(content: &str) -> bool {
 }
 
 /// Capture the last N non-empty lines from a tmux pane.
-/// Returns None if the pane cannot be captured.
+/// Returns None if the pane cannot be captured or pane_id format is invalid.
 pub fn capture_pane_content(pane_id: &str, lines: usize) -> Option<String> {
     use std::process::Command;
+
+    // Validate pane_id format to prevent command injection
+    // Pane IDs must be '%' followed by one or more digits (e.g., "%0", "%12")
+    if !pane_id.starts_with('%') || pane_id.len() <= 1 {
+        return None;
+    }
+    let digits = &pane_id[1..];
+    if !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
 
     let output = Command::new("tmux")
         .args([

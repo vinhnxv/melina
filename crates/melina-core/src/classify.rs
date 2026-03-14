@@ -33,7 +33,12 @@ pub fn classify_child(proc: &ProcessInfo) -> ChildKind {
     }
 
     // Teammate — another `claude` process whose parent is also claude
-    if proc.name.to_lowercase().contains("claude") && !cmd_str.contains("server.py") {
+    // On macOS, the process name may be a version number (e.g., "2.1.75") due to symlink resolution.
+    // Check both process name AND command args for claude-related patterns.
+    let is_teammate = proc.name.to_lowercase().contains("claude")
+        || cmd_str.contains("--agent-id")
+        || ProcessInfo::is_claude_versioned_binary(&cmd_str.to_lowercase());
+    if is_teammate && !cmd_str.contains("server.py") {
         return ChildKind::Teammate {
             name: extract_teammate_name(&cmd_str),
         };
@@ -129,6 +134,15 @@ mod tests {
 
         // Test case insensitivity
         let proc = make_process_info(201, "Claude", vec!["Claude"]);
+        assert!(matches!(classify_child(&proc), ChildKind::Teammate { .. }));
+
+        // Test versioned binary name (macOS symlink resolution)
+        // Process name is version number, but cmd has versioned path
+        let proc = make_process_info(
+            202,
+            "2.1.75",
+            vec!["/Users/x/.local/share/claude/versions/2.1.75", "--agent-id", "worker-1"],
+        );
         assert!(matches!(classify_child(&proc), ChildKind::Teammate { .. }));
     }
 

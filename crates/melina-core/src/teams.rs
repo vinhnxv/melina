@@ -228,8 +228,9 @@ pub fn resolve_tmux_pids(teams: &mut [TeamInfo], sys: &System, snapshot: &TmuxSn
                             .map(|s| s.to_string_lossy())
                             .collect::<Vec<_>>()
                             .join(" ");
+                        // The process name may be a version number (e.g., "2.1.75") on macOS due to symlink resolution.
+                        // Rely on cmd_str patterns which are more reliable.
                         name.contains("claude")
-                            || name.contains("node")
                             || cmd_str.contains("claude")
                             || cmd_str.contains("--agent-id")
                     }
