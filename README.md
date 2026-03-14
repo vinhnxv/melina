@@ -66,6 +66,7 @@ Without tmux mode, teammates run as background processes that are harder to insp
 - **Manual cleanup** (`k` key / `--kill-zombies`) — kills all detected zombies immediately
 - **Auto-cleanup** (`a` key / `--auto-cleanup`) — periodic cleanup on a configurable interval (default 15 min), only targets zombies with 30+ minutes uptime to avoid killing recently-started processes
 - **Kill by PID** (`d` key / `--kill <PID>`) — safely terminate specific Claude processes with tmux pane awareness
+- **Kill swarm** (`kill-swarm <team-name>`) — safely terminate an entire agent team (tmux server + teammates + config) with self-kill guard
 - Safety checks: only kills claude-related PIDs, validates paths before directory removal
 
 ### Resource Tracking
@@ -114,7 +115,7 @@ Pre-built binaries are available on the [Releases](https://github.com/vinhnxv/me
 
 ```bash
 # Example: download and install on Apple Silicon
-curl -L https://github.com/vinhnxv/melina/releases/latest/download/melina-v0.2.0-aarch64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/vinhnxv/melina/releases/latest/download/melina-v0.3.0-aarch64-apple-darwin.tar.gz | tar xz
 sudo mv melina melina-cli /usr/local/bin/
 ```
 
@@ -146,7 +147,7 @@ cargo build --release
 
 ```bash
 melina              # opens TUI dashboard (q to quit)
-melina-cli --version    # should print: melina-cli 0.2.0
+melina-cli --version    # should print: melina-cli 0.3.0
 ```
 
 ### Uninstall
@@ -200,6 +201,9 @@ melina-cli --json --teams               # Include team details in JSON
 melina-cli --kill-zombies               # Clean up dead teams + orphan tmux servers
 melina-cli --kill 12345                 # Kill a specific Claude process by PID
 melina-cli --kill 12345 --kill 67890    # Kill multiple PIDs
+melina-cli kill-swarm my-team           # Kill an entire agent team safely
+melina-cli kill-swarm my-team --force   # Kill team even if it's your own session
+melina-cli --pane-lines 3               # Show last 3 lines from each tmux pane
 ```
 
 #### What you see
@@ -276,3 +280,23 @@ crates/
 ## License
 
 MIT
+
+## Claude Code Skill
+
+melina includes a built-in Claude Code skill for process management. Add the skill to your project:
+
+```
+.claude/skills/melina.md
+```
+
+Then use it directly in Claude Code:
+
+```
+/melina status              # Show all sessions, teams, and process health
+/melina cleanup             # Preview zombie cleanup (dry-run by default)
+/melina cleanup --execute   # Execute zombie cleanup
+/melina kill <team-or-pid>  # Kill a specific swarm team or process
+/melina watch               # Live monitoring
+```
+
+This gives Claude Code itself the ability to inspect and manage its own process ecosystem — useful for self-cleanup after long workflows.
