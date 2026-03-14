@@ -1,13 +1,13 @@
 //! Tree building — assemble flat process list into session trees.
 
-use crate::{ProcessInfo, ChildKind, Health, classify_child, check_health};
 use crate::git::GitContext;
 use crate::status::{ClaudeSessionStatus, detect_pane_status};
-use crate::teams::{TeamInfo, ConfigDirCache, TmuxSnapshot, scan_teams_cached, resolve_tmux_pids};
+use crate::teams::{ConfigDirCache, TeamInfo, TmuxSnapshot, resolve_tmux_pids, scan_teams_cached};
+use crate::{ChildKind, Health, ProcessInfo, check_health, classify_child};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use sysinfo::{System, Pid};
+use sysinfo::{Pid, System};
 
 /// A child process within a session tree.
 #[derive(Debug, Clone, Serialize)]
@@ -35,7 +35,11 @@ pub struct HostTmux {
 
 impl std::fmt::Display for HostTmux {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}.{}", self.session_name, self.window_index, self.pane_index)
+        write!(
+            f,
+            "{}:{}.{}",
+            self.session_name, self.window_index, self.pane_index
+        )
     }
 }
 
@@ -76,7 +80,10 @@ impl SessionTree {
 
     /// Count MCP server children (from process tree).
     pub fn mcp_count(&self) -> usize {
-        self.children.iter().filter(|c| matches!(c.kind, ChildKind::McpServer { .. })).count()
+        self.children
+            .iter()
+            .filter(|c| matches!(c.kind, ChildKind::McpServer { .. }))
+            .count()
     }
 
     /// Count teammates from team config (not process tree).
@@ -155,16 +162,18 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
     // Unlike sysinfo's exe() which returns the symlink path, proc_pidpath
     // returns the resolved path of the binary loaded at exec time.
     if let Some(path) = proc_pidpath(root.pid)
-        && let Some(version) = extract_version_from_path(&path) {
-            return Some(version);
-        }
+        && let Some(version) = extract_version_from_path(&path)
+    {
+        return Some(version);
+    }
 
     // Strategy 2: extract version from the binary path in cmd args.
     // Only works when launched via the full versioned path.
     if let Some(first) = root.cmd.first()
-        && let Some(version) = extract_version_from_path(first) {
-            return Some(version);
-        }
+        && let Some(version) = extract_version_from_path(first)
+    {
+        return Some(version);
+    }
 
     // Strategy 3: check if the process name is a version number.
     if looks_like_version(&root.name) {
@@ -187,9 +196,10 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
     {
         let cache = VERSION_CACHE.lock().ok()?;
         if let Some(ref map) = *cache
-            && let Some(cached) = map.get(binary_path) {
-                return cached.clone();
-            }
+            && let Some(cached) = map.get(binary_path)
+        {
+            return cached.clone();
+        }
     }
 
     // Run `<binary> --version` and capture output
@@ -206,7 +216,11 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
                 .next()
                 .unwrap_or(&version_str)
                 .to_string();
-            if version.is_empty() { None } else { Some(version) }
+            if version.is_empty() {
+                None
+            } else {
+                Some(version)
+            }
         });
 
     // Store in cache
@@ -233,8 +247,12 @@ fn query_host_tmux_panes() -> Vec<TmuxPaneEntry> {
     use std::process::Command;
 
     let output = Command::new("tmux")
-        .args(["list-panes", "-a", "-F",
-               "#{pane_pid}|#{session_name}|#{window_index}|#{pane_index}|#{pane_id}|#{pid}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_pid}|#{session_name}|#{window_index}|#{pane_index}|#{pane_id}|#{pid}",
+        ])
         .output();
 
     let stdout = match output {
@@ -242,18 +260,23 @@ fn query_host_tmux_panes() -> Vec<TmuxPaneEntry> {
         _ => return Vec::new(),
     };
 
-    stdout.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.splitn(6, '|').collect();
-        if parts.len() != 6 { return None; }
-        Some(TmuxPaneEntry {
-            pane_pid: parts[0].parse().ok()?,
-            session_name: parts[1].to_string(),
-            window_index: parts[2].parse().ok()?,
-            pane_index: parts[3].parse().ok()?,
-            pane_id: parts[4].to_string(),
-            server_pid: parts[5].parse().ok()?,
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '|').collect();
+            if parts.len() != 6 {
+                return None;
+            }
+            Some(TmuxPaneEntry {
+                pane_pid: parts[0].parse().ok()?,
+                session_name: parts[1].to_string(),
+                window_index: parts[2].parse().ok()?,
+                pane_index: parts[3].parse().ok()?,
+                pane_id: parts[4].to_string(),
+                server_pid: parts[5].parse().ok()?,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Detect if a Claude root process is running inside a user's tmux session.
@@ -288,7 +311,8 @@ fn detect_host_tmux(
         }
 
         // Move to parent
-        let parent_pid = sys.process(Pid::from_u32(current_pid))
+        let parent_pid = sys
+            .process(Pid::from_u32(current_pid))
             .and_then(|p| p.parent())
             .map(|p| p.as_u32());
 
@@ -305,7 +329,11 @@ fn detect_host_tmux(
 /// Accepts a pre-created `System` to avoid redundant process table loads.
 /// When `skip_status` is true, skips expensive capture-pane/jsonl status detection
 /// and sets `claude_status` to `Unknown` (caller should merge from cache).
-pub fn build_trees(processes: Vec<ProcessInfo>, sys: &System, skip_status: bool) -> Vec<SessionTree> {
+pub fn build_trees(
+    processes: Vec<ProcessInfo>,
+    sys: &System,
+    skip_status: bool,
+) -> Vec<SessionTree> {
     let snapshot = TmuxSnapshot::new();
     let cache = ConfigDirCache::new();
     build_trees_with_context(processes, sys, skip_status, &cache, &snapshot)
@@ -349,11 +377,16 @@ pub fn build_trees_with_context(
                 let kind = classify_child(p);
                 let is_mcp = matches!(kind, ChildKind::McpServer { .. });
                 let health = check_health(p, is_mcp, sys);
-                ChildProcess { info: p.clone(), kind, health }
+                ChildProcess {
+                    info: p.clone(),
+                    kind,
+                    health,
+                }
             })
             .collect();
 
-        let total_memory = root.memory_bytes
+        let total_memory = root
+            .memory_bytes
             .saturating_add(children.iter().map(|c| c.info.memory_bytes).sum::<u64>());
 
         let config_dir = detect_config_dir(root, &children);
@@ -379,8 +412,8 @@ pub fn build_trees_with_context(
         // Detect Claude session status: skip expensive capture-pane if requested
         let claude_status = if skip_status {
             // CPU-based heuristic only (cheap)
-            let total_cpu: f32 = root.cpu_percent
-                + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            let total_cpu: f32 =
+                root.cpu_percent + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
             if total_cpu > 0.5 {
                 ClaudeSessionStatus::Working
             } else {
@@ -390,8 +423,8 @@ pub fn build_trees_with_context(
             detect_pane_status(&tmux.pane_id)
         } else {
             // No tmux pane — fallback to CPU-based heuristic
-            let total_cpu: f32 = root.cpu_percent
-                + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            let total_cpu: f32 =
+                root.cpu_percent + children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
             if total_cpu > 0.5 {
                 ClaudeSessionStatus::Working
             } else {
@@ -467,30 +500,34 @@ fn match_teams_to_session(
     for team in all_teams {
         // Match by session ID (most precise)
         if let Some(lead_sid) = &team.lead_session_id
-            && session_ids.contains(lead_sid) {
-                matched.push(team.clone());
-                continue;
-            }
+            && session_ids.contains(lead_sid)
+        {
+            matched.push(team.clone());
+            continue;
+        }
 
         // Match by owner_pid in .session file → root PID
-        let session_path = team.config_dir
+        let session_path = team
+            .config_dir
             .join("teams")
             .join(&team.name)
             .join(".session");
         if let Ok(content) = std::fs::read_to_string(&session_path)
             && let Ok(session) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(pid_str) = session.get("owner_pid").and_then(|v| v.as_str())
-                    && let Ok(pid) = pid_str.parse::<u32>()
-                        && pid == root.pid {
-                            // Also grab session_id from .session file if we don't have one yet
-                            if found_session_id.is_none() {
-                                found_session_id = session.get("session_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                            }
-                            matched.push(team.clone());
-                            continue;
-                        }
+            && let Some(pid_str) = session.get("owner_pid").and_then(|v| v.as_str())
+            && let Ok(pid) = pid_str.parse::<u32>()
+            && pid == root.pid
+        {
+            // Also grab session_id from .session file if we don't have one yet
+            if found_session_id.is_none() {
+                found_session_id = session
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+            }
+            matched.push(team.clone());
+            continue;
+        }
     }
 
     (matched, found_session_id)

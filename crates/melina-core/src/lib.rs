@@ -4,20 +4,29 @@
 //! builds parent-child trees, classifies children (MCP server,
 //! teammate, hook, bash tool), and detects orphans.
 
-mod discovery;
 mod classify;
+mod discovery;
+pub mod format;
 mod git;
 mod health;
 mod status;
-mod tree;
 mod teams;
-pub mod format;
+mod tree;
 
-pub use discovery::{scan, create_process_system, refresh_process_system, ProcessInfo};
 pub use classify::{ChildKind, classify_child};
+pub use discovery::{ProcessInfo, create_process_system, refresh_process_system, scan};
+pub use format::{format_bytes, format_timestamp, format_uptime};
 pub use git::GitContext;
-pub use health::{Health, check_health, TeammateHealth, TeammateHealthEntry, TeamHealthReport, check_team_health, ZombieEntry, StalePaneReason, scan_zombies, scan_zombies_with, KillZombiesResult, kill_zombies, kill_zombies_with, kill_zombies_auto, AutoCleanup, format_cleanup_result, ProcessLookup, ProcessLookupKind, lookup_process, kill_process};
-pub use status::{ClaudeSessionStatus, detect_status, detect_pane_status};
-pub use tree::{SessionTree, ChildProcess, HostTmux, build_trees, build_trees_with_context};
-pub use teams::{TeamInfo, TeamMember, ConfigDirCache, TmuxSnapshot, scan_teams, scan_teams_cached, resolve_tmux_pids, TmuxServer, TmuxPane, PaneStatus, scan_tmux_servers, scan_tmux_servers_cached, scan_tmux_servers_with_snapshot, kill_tmux_server};
-pub use format::{format_bytes, format_uptime, format_timestamp};
+pub use health::{
+    AutoCleanup, Health, KillZombiesResult, ProcessLookup, ProcessLookupKind, StalePaneReason,
+    TeamHealthReport, TeammateHealth, TeammateHealthEntry, ZombieEntry, check_health,
+    check_team_health, format_cleanup_result, kill_process, kill_zombies, kill_zombies_auto,
+    kill_zombies_with, lookup_process, scan_zombies, scan_zombies_with,
+};
+pub use status::{ClaudeSessionStatus, detect_pane_status, detect_status};
+pub use teams::{
+    ConfigDirCache, PaneStatus, TeamInfo, TeamMember, TmuxPane, TmuxServer, TmuxSnapshot,
+    kill_tmux_server, resolve_tmux_pids, scan_teams, scan_teams_cached, scan_tmux_servers,
+    scan_tmux_servers_cached, scan_tmux_servers_with_snapshot,
+};
+pub use tree::{ChildProcess, HostTmux, SessionTree, build_trees, build_trees_with_context};

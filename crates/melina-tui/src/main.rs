@@ -1,12 +1,17 @@
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyCode, KeyEventKind},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_zombies_auto, kill_process, format_cleanup_result, AutoCleanup, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, TmuxPane, PaneStatus, format_uptime};
-use sysinfo::System;
+use melina_core::{
+    AutoCleanup, ChildKind, ClaudeSessionStatus, ConfigDirCache, PaneStatus, SessionTree,
+    TeammateHealth, TmuxPane, TmuxServer, TmuxSnapshot, ZombieEntry, build_trees_with_context,
+    check_team_health, create_process_system, format_cleanup_result, format_uptime, kill_process,
+    kill_zombies, kill_zombies_auto, refresh_process_system, scan, scan_tmux_servers_with_snapshot,
+    scan_zombies,
+};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Row, Table},
@@ -14,28 +19,29 @@ use ratatui::{
 use std::collections::HashMap;
 use std::io::stdout;
 use std::time::{Duration, Instant};
+use sysinfo::System;
 
 // Solarized Dark palette — works on any terminal, not just solarized-configured ones.
 #[allow(dead_code)]
 mod sol {
     use ratatui::style::Color;
     // Backgrounds
-    pub const BASE03: Color = Color::Rgb(0, 43, 54);     // darkest bg
-    pub const BASE02: Color = Color::Rgb(7, 54, 66);     // bg highlights (selection)
+    pub const BASE03: Color = Color::Rgb(0, 43, 54); // darkest bg
+    pub const BASE02: Color = Color::Rgb(7, 54, 66); // bg highlights (selection)
     // Content tones
-    pub const BASE01: Color = Color::Rgb(88, 110, 117);  // comments, secondary, dim
+    pub const BASE01: Color = Color::Rgb(88, 110, 117); // comments, secondary, dim
     pub const BASE00: Color = Color::Rgb(101, 123, 131); // muted body text
-    pub const BASE0: Color  = Color::Rgb(131, 148, 150); // default body text
-    pub const BASE1: Color  = Color::Rgb(147, 161, 161); // emphasized content
+    pub const BASE0: Color = Color::Rgb(131, 148, 150); // default body text
+    pub const BASE1: Color = Color::Rgb(147, 161, 161); // emphasized content
     // Accent colors
-    pub const YELLOW: Color  = Color::Rgb(181, 137, 0);
-    pub const ORANGE: Color  = Color::Rgb(203, 75, 22);
-    pub const RED: Color     = Color::Rgb(220, 50, 47);
+    pub const YELLOW: Color = Color::Rgb(181, 137, 0);
+    pub const ORANGE: Color = Color::Rgb(203, 75, 22);
+    pub const RED: Color = Color::Rgb(220, 50, 47);
     pub const MAGENTA: Color = Color::Rgb(211, 54, 130);
-    pub const VIOLET: Color  = Color::Rgb(108, 113, 196);
-    pub const BLUE: Color    = Color::Rgb(38, 139, 210);
-    pub const CYAN: Color    = Color::Rgb(42, 161, 152);
-    pub const GREEN: Color   = Color::Rgb(133, 153, 0);
+    pub const VIOLET: Color = Color::Rgb(108, 113, 196);
+    pub const BLUE: Color = Color::Rgb(38, 139, 210);
+    pub const CYAN: Color = Color::Rgb(42, 161, 152);
+    pub const GREEN: Color = Color::Rgb(133, 153, 0);
 }
 
 fn main() -> Result<()> {
@@ -64,7 +70,15 @@ fn main() -> Result<()> {
 
     loop {
         terminal.draw(|frame| {
-            ui(frame, &trees, &tmux_servers, status_msg.as_ref().map(|(s, _)| s.as_str()), &sys, auto_cleanup.is_enabled(), &settings);
+            ui(
+                frame,
+                &trees,
+                &tmux_servers,
+                status_msg.as_ref().map(|(s, _)| s.as_str()),
+                &sys,
+                auto_cleanup.is_enabled(),
+                &settings,
+            );
             if let Some(ref zombies) = zombie_dialog {
                 draw_zombie_dialog(frame, zombies);
             }
@@ -75,7 +89,10 @@ fn main() -> Result<()> {
         })?;
 
         // Clear status message after 5 seconds
-        if status_msg.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(settings.status_display_secs)) {
+        if status_msg
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(settings.status_display_secs))
+        {
             status_msg = None;
         }
 
@@ -84,158 +101,172 @@ fn main() -> Result<()> {
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)?
             && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press {
-                    // Kill-by-PID dialog mode
-                    if let KillDialogState::Selecting { ref entries, selected, .. } = kill_dialog {
-                        let count = entries.len();
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Char('q') => {
-                                kill_dialog = KillDialogState::Closed;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                kill_dialog.move_selection(count, -1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                kill_dialog.move_selection(count, 1);
-                            }
-                            KeyCode::Enter => {
-                                if selected < count {
-                                    let entry = entries[selected].clone();
-                                    kill_dialog = KillDialogState::Confirm { entry };
-                                }
-                            }
-                            _ => {}
-                        }
-                        continue;
+            && key.kind == KeyEventKind::Press
+        {
+            // Kill-by-PID dialog mode
+            if let KillDialogState::Selecting {
+                ref entries,
+                selected,
+                ..
+            } = kill_dialog
+            {
+                let count = entries.len();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        kill_dialog = KillDialogState::Closed;
                     }
-                    if let KillDialogState::Confirm { ref entry } = kill_dialog {
-                        let pid = entry.pid;
-                        match key.code {
-                            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                match kill_process(pid) {
-                                    Ok(msg) => status_msg = Some((msg, Instant::now())),
-                                    Err(msg) => status_msg = Some((msg, Instant::now())),
-                                }
-                                kill_dialog = KillDialogState::Closed;
-                                let r = refresh_full(&mut sys);
-                                trees = r.0;
-                                tmux_servers = r.1;
-                                last_status_refresh = Instant::now();
-                            }
-                            _ => {
-                                kill_dialog = KillDialogState::Closed;
-                                status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
-                            }
-                        }
-                        continue;
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        kill_dialog.move_selection(count, -1);
                     }
-
-                    // Settings dialog mode
-                    if settings_open {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('q') => {
-                                settings_open = false;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                settings_selected = settings_selected.saturating_sub(1);
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if settings_selected < Settings::FIELD_COUNT - 1 {
-                                    settings_selected += 1;
-                                }
-                            }
-                            KeyCode::Left | KeyCode::Char('h') => {
-                                settings.adjust(settings_selected, -1);
-                                settings.apply_to_cleanup(&mut auto_cleanup);
-                            }
-                            KeyCode::Right | KeyCode::Char('l') => {
-                                settings.adjust(settings_selected, 1);
-                                settings.apply_to_cleanup(&mut auto_cleanup);
-                            }
-                            _ => {}
-                        }
-                        continue;
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        kill_dialog.move_selection(count, 1);
                     }
-
-                    // Zombie dialog mode — capture keys here first
-                    if zombie_dialog.is_some() {
-                        match key.code {
-                            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                let result = kill_zombies();
-                                let msg = if result.total() == 0 {
-                                    "No zombies killed (already gone?)".to_string()
-                                } else {
-                                    format_cleanup_result(&result)
-                                };
-                                status_msg = Some((msg, Instant::now()));
-                                zombie_dialog = None;
-                                let r = refresh_full(&mut sys);
-                                trees = r.0;
-                                tmux_servers = r.1;
-                                last_status_refresh = Instant::now();
-                            }
-                            _ => {
-                                // Any other key cancels
-                                zombie_dialog = None;
-                                status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
-                            }
+                    KeyCode::Enter => {
+                        if selected < count {
+                            let entry = entries[selected].clone();
+                            kill_dialog = KillDialogState::Confirm { entry };
                         }
-                        continue;
                     }
-
-                    // Debounce helper: skip if same key pressed within 300ms
-                    let debounced = |c: char, map: &mut HashMap<char, Instant>| -> bool {
-                        let now = Instant::now();
-                        if let Some(last) = map.get(&c)
-                            && now.duration_since(*last) < debounce_duration {
-                                return true; // too soon, skip
-                            }
-                        map.insert(c, now);
-                        false
-                    };
-
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
-                        KeyCode::Char('r') if !debounced('r', &mut last_key_time) => {
-                            let r = refresh_full(&mut sys);
-                            trees = r.0;
-                            tmux_servers = r.1;
-                            last_status_refresh = Instant::now();
-                        },
-                        KeyCode::Char('k') if !debounced('k', &mut last_key_time) => {
-                            let zombies = scan_zombies();
-                            if zombies.is_empty() {
-                                status_msg = Some(("No zombies found. All clean.".to_string(), Instant::now()));
-                            } else {
-                                zombie_dialog = Some(zombies);
-                            }
-                        },
-                        KeyCode::Char('d') if !debounced('d', &mut last_key_time) => {
-                            let entries = build_killable_list(&trees, &tmux_servers);
-                            if entries.is_empty() {
-                                status_msg = Some(("No killable processes.".to_string(), Instant::now()));
-                            } else {
-                                kill_dialog = KillDialogState::Selecting { entries, selected: 0 };
-                            }
-                        },
-                        KeyCode::Char('a') if !debounced('a', &mut last_key_time) => {
-                            let enabled = auto_cleanup.toggle();
-                            status_msg = Some((
-                                if enabled {
-                                    format!("Auto-cleanup: ON (every {}m)", settings.cleanup_interval_mins)
-                                } else {
-                                    "Auto-cleanup: OFF".to_string()
-                                },
-                                Instant::now(),
-                            ));
-                        },
-                        KeyCode::Char('s') => {
-                            settings_open = true;
-                            settings_selected = 0;
-                        },
-                        _ => {}
+                    _ => {}
+                }
+                continue;
+            }
+            if let KillDialogState::Confirm { ref entry } = kill_dialog {
+                let pid = entry.pid;
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        match kill_process(pid) {
+                            Ok(msg) => status_msg = Some((msg, Instant::now())),
+                            Err(msg) => status_msg = Some((msg, Instant::now())),
+                        }
+                        kill_dialog = KillDialogState::Closed;
+                        let r = refresh_full(&mut sys);
+                        trees = r.0;
+                        tmux_servers = r.1;
+                        last_status_refresh = Instant::now();
+                    }
+                    _ => {
+                        kill_dialog = KillDialogState::Closed;
+                        status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
                     }
                 }
+                continue;
+            }
+
+            // Settings dialog mode
+            if settings_open {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('q') => {
+                        settings_open = false;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        settings_selected = settings_selected.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if settings_selected < Settings::FIELD_COUNT - 1 {
+                            settings_selected += 1;
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        settings.adjust(settings_selected, -1);
+                        settings.apply_to_cleanup(&mut auto_cleanup);
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        settings.adjust(settings_selected, 1);
+                        settings.apply_to_cleanup(&mut auto_cleanup);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Zombie dialog mode — capture keys here first
+            if zombie_dialog.is_some() {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        let result = kill_zombies();
+                        let msg = if result.total() == 0 {
+                            "No zombies killed (already gone?)".to_string()
+                        } else {
+                            format_cleanup_result(&result)
+                        };
+                        status_msg = Some((msg, Instant::now()));
+                        zombie_dialog = None;
+                        let r = refresh_full(&mut sys);
+                        trees = r.0;
+                        tmux_servers = r.1;
+                        last_status_refresh = Instant::now();
+                    }
+                    _ => {
+                        // Any other key cancels
+                        zombie_dialog = None;
+                        status_msg = Some(("Kill cancelled.".to_string(), Instant::now()));
+                    }
+                }
+                continue;
+            }
+
+            // Debounce helper: skip if same key pressed within 300ms
+            let debounced = |c: char, map: &mut HashMap<char, Instant>| -> bool {
+                let now = Instant::now();
+                if let Some(last) = map.get(&c)
+                    && now.duration_since(*last) < debounce_duration
+                {
+                    return true; // too soon, skip
+                }
+                map.insert(c, now);
+                false
+            };
+
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
+                KeyCode::Char('r') if !debounced('r', &mut last_key_time) => {
+                    let r = refresh_full(&mut sys);
+                    trees = r.0;
+                    tmux_servers = r.1;
+                    last_status_refresh = Instant::now();
+                }
+                KeyCode::Char('k') if !debounced('k', &mut last_key_time) => {
+                    let zombies = scan_zombies();
+                    if zombies.is_empty() {
+                        status_msg =
+                            Some(("No zombies found. All clean.".to_string(), Instant::now()));
+                    } else {
+                        zombie_dialog = Some(zombies);
+                    }
+                }
+                KeyCode::Char('d') if !debounced('d', &mut last_key_time) => {
+                    let entries = build_killable_list(&trees, &tmux_servers);
+                    if entries.is_empty() {
+                        status_msg = Some(("No killable processes.".to_string(), Instant::now()));
+                    } else {
+                        kill_dialog = KillDialogState::Selecting {
+                            entries,
+                            selected: 0,
+                        };
+                    }
+                }
+                KeyCode::Char('a') if !debounced('a', &mut last_key_time) => {
+                    let enabled = auto_cleanup.toggle();
+                    status_msg = Some((
+                        if enabled {
+                            format!(
+                                "Auto-cleanup: ON (every {}m)",
+                                settings.cleanup_interval_mins
+                            )
+                        } else {
+                            "Auto-cleanup: OFF".to_string()
+                        },
+                        Instant::now(),
+                    ));
+                }
+                KeyCode::Char('s') => {
+                    settings_open = true;
+                    settings_selected = 0;
+                }
+                _ => {}
+            }
+        }
 
         if last_tick.elapsed() >= tick_rate {
             // Don't auto-refresh while any dialog is open
@@ -305,8 +336,12 @@ fn refresh_quick(
     let mut tmux_servers = scan_tmux_servers_with_snapshot(sys, true, Some(&cache), &snapshot);
 
     // Build HashMaps for O(1) lookups (avoids O(n²) nested finds)
-    let prev_tree_map: HashMap<u32, &SessionTree> = prev_trees.iter().map(|t| (t.root.pid, t)).collect();
-    let prev_tmux_map: HashMap<&str, &TmuxServer> = prev_tmux.iter().map(|s| (s.socket_name.as_str(), s)).collect();
+    let prev_tree_map: HashMap<u32, &SessionTree> =
+        prev_trees.iter().map(|t| (t.root.pid, t)).collect();
+    let prev_tmux_map: HashMap<&str, &TmuxServer> = prev_tmux
+        .iter()
+        .map(|s| (s.socket_name.as_str(), s))
+        .collect();
 
     // Merge cached status from previous full refresh
     for tree in &mut trees {
@@ -322,7 +357,11 @@ fn refresh_quick(
     for srv in &mut tmux_servers {
         if let Some(prev_srv) = prev_tmux_map.get(srv.socket_name.as_str()) {
             // Build pane HashMap for O(1) lookup
-            let prev_pane_map: HashMap<&str, &TmuxPane> = prev_srv.panes.iter().map(|p| (p.pane_id.as_str(), p)).collect();
+            let prev_pane_map: HashMap<&str, &TmuxPane> = prev_srv
+                .panes
+                .iter()
+                .map(|p| (p.pane_id.as_str(), p))
+                .collect();
             for pane in &mut srv.panes {
                 if let Some(prev_pane) = prev_pane_map.get(pane.pane_id.as_str()) {
                     if pane.last_line.is_none() {
@@ -351,7 +390,15 @@ fn format_ts(epoch: u64) -> String {
 
 // format_uptime is imported from melina_core::format
 
-fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System, auto_cleanup_enabled: bool, settings: &Settings) {
+fn ui(
+    frame: &mut Frame,
+    trees: &[SessionTree],
+    tmux_servers: &[TmuxServer],
+    status_msg: Option<&str>,
+    sys: &System,
+    auto_cleanup_enabled: bool,
+    settings: &Settings,
+) {
     let area = frame.area();
 
     let has_tmux = !tmux_servers.is_empty();
@@ -361,14 +408,14 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
         .direction(Direction::Vertical)
         .constraints(if has_tmux {
             vec![
-                Constraint::Length(3),   // header
-                Constraint::Min(8),      // sessions table
+                Constraint::Length(3),                   // header
+                Constraint::Min(8),                      // sessions table
                 Constraint::Length(tmux_height.min(16)), // tmux servers
-                Constraint::Length(3),   // footer
+                Constraint::Length(3),                   // footer
             ]
         } else {
             vec![
-                Constraint::Length(3),  // header
+                Constraint::Length(3), // header
                 Constraint::Min(10),   // sessions table
                 Constraint::Length(3), // footer
             ]
@@ -380,7 +427,11 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
     let total_children: usize = trees.iter().map(|t| t.children.len()).sum();
     let total_mem: u64 = trees.iter().map(|t| t.total_memory_bytes).sum();
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
-    let auto_label = if auto_cleanup_enabled { " [AUTO-CLEAN]" } else { "" };
+    let auto_label = if auto_cleanup_enabled {
+        " [AUTO-CLEAN]"
+    } else {
+        ""
+    };
     let header = Paragraph::new(format!(
         " melina — {} sessions | {} children | {:.0}MB total | {}{}",
         total_sessions,
@@ -389,7 +440,11 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
         now,
         auto_label
     ))
-    .block(Block::default().borders(Borders::ALL).title(" Claude Code Monitor "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Claude Code Monitor "),
+    );
     frame.render_widget(header, chunks[0]);
 
     // Build rows
@@ -398,26 +453,49 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
         let started = format_ts(tree.root.start_time);
         let uptime = format_uptime(tree.root.start_time);
         let cpu: f32 = tree.root.cpu_percent
-            + tree.children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            + tree
+                .children
+                .iter()
+                .map(|c| c.info.cpu_percent)
+                .sum::<f32>();
         // Build info string with cwd and session ID
-        let cwd_short = tree.working_dir.as_deref()
+        let cwd_short = tree
+            .working_dir
+            .as_deref()
             .and_then(|p| p.rsplit('/').next())
             .unwrap_or("");
-        let sid_short: String = tree.session_id.as_deref()
+        let sid_short: String = tree
+            .session_id
+            .as_deref()
             .map(|s| s.chars().take(8).collect())
             .unwrap_or_default();
-        let tmux_label = tree.host_tmux.as_ref()
+        let tmux_label = tree
+            .host_tmux
+            .as_ref()
             .map(|t| format!("[{}] {}", t.server_pid, t))
             .unwrap_or_default();
-        let git_label = tree.git_context.as_ref()
+        let git_label = tree
+            .git_context
+            .as_ref()
             .map(|g| format!(" ({})", g.display()))
             .unwrap_or_default();
         let info = if !sid_short.is_empty() {
-            format!("{} MCP, {} mates | {}{} [{}…]",
-                tree.mcp_count(), tree.teammate_count(), cwd_short, git_label, sid_short)
+            format!(
+                "{} MCP, {} mates | {}{} [{}…]",
+                tree.mcp_count(),
+                tree.teammate_count(),
+                cwd_short,
+                git_label,
+                sid_short
+            )
         } else if !cwd_short.is_empty() {
-            format!("{} MCP, {} mates | {}{}",
-                tree.mcp_count(), tree.teammate_count(), cwd_short, git_label)
+            format!(
+                "{} MCP, {} mates | {}{}",
+                tree.mcp_count(),
+                tree.teammate_count(),
+                cwd_short,
+                git_label
+            )
         } else {
             format!("{} MCP, {} mates", tree.mcp_count(), tree.teammate_count())
         };
@@ -425,31 +503,50 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
         let ver = tree.claude_version.as_deref().unwrap_or("?");
         let config = tree.config_label();
         let kind_str = format!("SESSION [{}] [{}]", ver, config);
-        let status_str = format!("{} {}", tree.claude_status.symbol(), tree.claude_status.label());
+        let status_str = format!(
+            "{} {}",
+            tree.claude_status.symbol(),
+            tree.claude_status.label()
+        );
         let session_style = match tree.claude_status {
-            ClaudeSessionStatus::Working => Style::default().fg(sol::GREEN).add_modifier(Modifier::BOLD),
-            ClaudeSessionStatus::Idle => Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD),
-            ClaudeSessionStatus::WaitingInput => Style::default().fg(sol::MAGENTA).add_modifier(Modifier::BOLD),
-            ClaudeSessionStatus::Unknown => Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Working => {
+                Style::default().fg(sol::GREEN).add_modifier(Modifier::BOLD)
+            }
+            ClaudeSessionStatus::Idle => Style::default()
+                .fg(sol::YELLOW)
+                .add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::WaitingInput => Style::default()
+                .fg(sol::MAGENTA)
+                .add_modifier(Modifier::BOLD),
+            ClaudeSessionStatus::Unknown => Style::default()
+                .fg(sol::YELLOW)
+                .add_modifier(Modifier::BOLD),
         };
-        rows.push(Row::new(vec![
-            format!("S{}", i + 1),
-            format!("{}", tree.root.pid),
-            kind_str,
-            format!("{:.1}%", cpu),
-            format!("{:.1}MB", tree.total_memory_bytes as f64 / 1_048_576.0),
-            started,
-            uptime,
-            status_str,
-            info,
-            tmux_label,
-        ]).style(session_style));
+        rows.push(
+            Row::new(vec![
+                format!("S{}", i + 1),
+                format!("{}", tree.root.pid),
+                kind_str,
+                format!("{:.1}%", cpu),
+                format!("{:.1}MB", tree.total_memory_bytes as f64 / 1_048_576.0),
+                started,
+                uptime,
+                status_str,
+                info,
+                tmux_label,
+            ])
+            .style(session_style),
+        );
 
         // Teams & teammates (from config.json) with health
         for team in &tree.teams {
             let report = check_team_health(team, sys);
             let mates = team.teammates();
-            let unhealthy = report.members.iter().filter(|m| !m.health.is_healthy()).count();
+            let unhealthy = report
+                .members
+                .iter()
+                .filter(|m| !m.health.is_healthy())
+                .count();
             let team_status = if !report.owner_alive {
                 " ZOMBIE"
             } else if unhealthy > 0 {
@@ -457,31 +554,45 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
             } else {
                 ""
             };
-            rows.push(Row::new(vec![
-                "  ".to_string(),
-                String::new(),
-                format!("TEAM:{}", team.name),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(), // STATUS
-                format!("{} mates, {} tasks{}", mates.len(), team.task_count, team_status),
-                String::new(), // TMUX
-            ]).style(Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)));
+            rows.push(
+                Row::new(vec![
+                    "  ".to_string(),
+                    String::new(),
+                    format!("TEAM:{}", team.name),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(), // STATUS
+                    format!(
+                        "{} mates, {} tasks{}",
+                        mates.len(),
+                        team.task_count,
+                        team_status
+                    ),
+                    String::new(), // TMUX
+                ])
+                .style(Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
+            );
 
             for entry in &report.members {
                 let m = team.members.iter().find(|m| m.name == entry.name);
                 let (health_str, style) = match &entry.health {
-                    TeammateHealth::Active => ("ACTIVE".to_string(), Style::default().fg(sol::GREEN)),
-                    TeammateHealth::Completed => ("DONE".to_string(), Style::default().fg(sol::CYAN)),
+                    TeammateHealth::Active => {
+                        ("ACTIVE".to_string(), Style::default().fg(sol::GREEN))
+                    }
+                    TeammateHealth::Completed => {
+                        ("DONE".to_string(), Style::default().fg(sol::CYAN))
+                    }
                     TeammateHealth::Zombie => ("ZOMBIE".to_string(), Style::default().fg(sol::RED)),
-                    TeammateHealth::Stale { idle_secs } => {
-                        (format!("STALE {}m", idle_secs / 60), Style::default().fg(sol::YELLOW))
-                    }
-                    TeammateHealth::Stuck { task_ids } => {
-                        (format!("STUCK({})", task_ids.len()), Style::default().fg(sol::RED))
-                    }
+                    TeammateHealth::Stale { idle_secs } => (
+                        format!("STALE {}m", idle_secs / 60),
+                        Style::default().fg(sol::YELLOW),
+                    ),
+                    TeammateHealth::Stuck { task_ids } => (
+                        format!("STUCK({})", task_ids.len()),
+                        Style::default().fg(sol::RED),
+                    ),
                 };
                 // In-process agents share resources with lead — show lead's PID with ~ prefix
                 let has_own_pid = m.and_then(|m| m.tmux_pid).is_some();
@@ -491,7 +602,8 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                     format!("~{}", tree.root.pid)
                 };
                 let cpu_str = if has_own_pid {
-                    m.map(|m| format!("{:.1}%", m.cpu_percent)).unwrap_or_default()
+                    m.map(|m| format!("{:.1}%", m.cpu_percent))
+                        .unwrap_or_default()
                 } else {
                     String::new()
                 };
@@ -516,18 +628,21 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 } else {
                     format_uptime(tree.root.start_time)
                 };
-                rows.push(Row::new(vec![
-                    "    ".to_string(),
-                    pid_str,
-                    format!("MATE:{}", entry.name),
-                    cpu_str,
-                    mem_str,
-                    started,
-                    uptime,
-                    health_str,
-                    format!("{}", entry.agent_type),
-                    String::new(), // TMUX
-                ]).style(style));
+                rows.push(
+                    Row::new(vec![
+                        "    ".to_string(),
+                        pid_str,
+                        format!("MATE:{}", entry.name),
+                        cpu_str,
+                        mem_str,
+                        started,
+                        uptime,
+                        health_str,
+                        format!("{}", entry.agent_type),
+                        String::new(), // TMUX
+                    ])
+                    .style(style),
+                );
             }
         }
 
@@ -547,43 +662,52 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 ChildKind::HookScript => Style::default().fg(sol::MAGENTA),
                 _ => Style::default().fg(sol::BASE01),
             };
-            let prefix = if ci == child_count - 1 { "  └─" } else { "  ├─" };
+            let prefix = if ci == child_count - 1 {
+                "  └─"
+            } else {
+                "  ├─"
+            };
             let child_started = format_ts(child.info.start_time);
             let child_uptime = format_uptime(child.info.start_time);
-            rows.push(Row::new(vec![
-                prefix.to_string(),
-                format!("{}", child.info.pid),
-                kind_str,
-                format!("{:.1}%", child.info.cpu_percent),
-                format!("{:.1}MB", child.info.memory_bytes as f64 / 1_048_576.0),
-                child_started,
-                child_uptime,
-                String::new(), // STATUS
-                child.info.name.clone(),
-                String::new(), // TMUX
-            ]).style(style));
+            rows.push(
+                Row::new(vec![
+                    prefix.to_string(),
+                    format!("{}", child.info.pid),
+                    kind_str,
+                    format!("{:.1}%", child.info.cpu_percent),
+                    format!("{:.1}MB", child.info.memory_bytes as f64 / 1_048_576.0),
+                    child_started,
+                    child_uptime,
+                    String::new(), // STATUS
+                    child.info.name.clone(),
+                    String::new(), // TMUX
+                ])
+                .style(style),
+            );
         }
     }
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(6),   // #
-            Constraint::Length(8),   // PID
-            Constraint::Length(38),  // KIND (includes version + config)
-            Constraint::Length(8),   // CPU
-            Constraint::Length(10),  // MEM
-            Constraint::Length(20),  // STARTED
-            Constraint::Length(8),   // UPTIME
-            Constraint::Length(12),  // STATUS
+            Constraint::Length(6),  // #
+            Constraint::Length(8),  // PID
+            Constraint::Length(38), // KIND (includes version + config)
+            Constraint::Length(8),  // CPU
+            Constraint::Length(10), // MEM
+            Constraint::Length(20), // STARTED
+            Constraint::Length(8),  // UPTIME
+            Constraint::Length(12), // STATUS
             Constraint::Fill(1),    // INFO
-            Constraint::Length(30),  // TMUX
+            Constraint::Length(30), // TMUX
         ],
     )
     .header(
-        Row::new(vec!["#", "PID", "KIND", "CPU", "MEM", "STARTED", "UPTIME", "STATUS", "INFO", "TMUX"])
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            .bottom_margin(1),
+        Row::new(vec![
+            "#", "PID", "KIND", "CPU", "MEM", "STARTED", "UPTIME", "STATUS", "INFO", "TMUX",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1),
     )
     .block(Block::default().borders(Borders::ALL).title(" Sessions "));
 
@@ -604,19 +728,30 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
             } else {
                 String::new()
             };
-            let started = if srv.start_time > 0 { format_ts(srv.start_time) } else { String::new() };
-            let uptime_str = if srv.start_time > 0 { format_uptime(srv.start_time) } else { String::new() };
-            tmux_rows.push(Row::new(vec![
-                srv.socket_name.clone(),
-                pid_str,
-                format!("{}", srv.lead_pid),
-                srv.label().to_string(),
-                format!("{}", srv.panes.len()),
-                mem_str,
-                started,
-                uptime_str,
-                String::new(),
-            ]).style(status_style));
+            let started = if srv.start_time > 0 {
+                format_ts(srv.start_time)
+            } else {
+                String::new()
+            };
+            let uptime_str = if srv.start_time > 0 {
+                format_uptime(srv.start_time)
+            } else {
+                String::new()
+            };
+            tmux_rows.push(
+                Row::new(vec![
+                    srv.socket_name.clone(),
+                    pid_str,
+                    format!("{}", srv.lead_pid),
+                    srv.label().to_string(),
+                    format!("{}", srv.panes.len()),
+                    mem_str,
+                    started,
+                    uptime_str,
+                    String::new(),
+                ])
+                .style(status_style),
+            );
 
             // Show each pane with agent details
             for pane in &srv.panes {
@@ -627,7 +762,8 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                     PaneStatus::Shell => Style::default().fg(sol::BASE01),
                 };
                 let agent = pane.agent_name.as_deref().unwrap_or("shell");
-                let claude_pid = pane.claude_pid
+                let claude_pid = pane
+                    .claude_pid
                     .map(|p| format!("{}", p))
                     .unwrap_or_default();
                 let pane_mem = if pane.memory_bytes > 0 {
@@ -640,25 +776,37 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 } else {
                     String::new()
                 };
-                let pane_started = if pane.start_time > 0 { format_ts(pane.start_time) } else { String::new() };
-                let pane_uptime = if pane.start_time > 0 { format_uptime(pane.start_time) } else { String::new() };
+                let pane_started = if pane.start_time > 0 {
+                    format_ts(pane.start_time)
+                } else {
+                    String::new()
+                };
+                let pane_uptime = if pane.start_time > 0 {
+                    format_uptime(pane.start_time)
+                } else {
+                    String::new()
+                };
 
                 // Build info: team name (with config status indicator) + last output
-                let team_label = pane.team_name.as_ref().map(|tn| {
-                    let short = tn.split('-').take(3).collect::<Vec<_>>().join("-");
-                    if pane.team_exists {
-                        short
-                    } else if srv.lead_alive && pane.claude_alive {
-                        // Lead + agent both alive, config cleaned early — normal
-                        short
-                    } else if pane.claude_alive {
-                        // Agent alive but lead is dead — true orphan
-                        format!("{} [ORPHAN]", short)
-                    } else {
-                        // Both dead, config gone — cleaned up
-                        format!("{} [CLEANED]", short)
-                    }
-                }).unwrap_or_default();
+                let team_label = pane
+                    .team_name
+                    .as_ref()
+                    .map(|tn| {
+                        let short = tn.split('-').take(3).collect::<Vec<_>>().join("-");
+                        if pane.team_exists {
+                            short
+                        } else if srv.lead_alive && pane.claude_alive {
+                            // Lead + agent both alive, config cleaned early — normal
+                            short
+                        } else if pane.claude_alive {
+                            // Agent alive but lead is dead — true orphan
+                            format!("{} [ORPHAN]", short)
+                        } else {
+                            // Both dead, config gone — cleaned up
+                            format!("{} [CLEANED]", short)
+                        }
+                    })
+                    .unwrap_or_default();
                 let last = pane.last_line.as_deref().unwrap_or("");
                 let info = if !team_label.is_empty() && !last.is_empty() {
                     format!("{} | {}", team_label, last)
@@ -668,40 +816,57 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                     last.to_string()
                 };
 
-                tmux_rows.push(Row::new(vec![
-                    format!("  {} {}", pane.pane_id, agent),
-                    claude_pid,
-                    format!("sh:{}", pane.shell_pid),
-                    pane.status.label().to_string(),
-                    pane_cpu,
-                    pane_mem,
-                    pane_started,
-                    pane_uptime,
-                    info,
-                ]).style(pane_style));
+                tmux_rows.push(
+                    Row::new(vec![
+                        format!("  {} {}", pane.pane_id, agent),
+                        claude_pid,
+                        format!("sh:{}", pane.shell_pid),
+                        pane.status.label().to_string(),
+                        pane_cpu,
+                        pane_mem,
+                        pane_started,
+                        pane_uptime,
+                        info,
+                    ])
+                    .style(pane_style),
+                );
             }
         }
 
         let tmux_table = Table::new(
             tmux_rows,
             [
-                Constraint::Length(28),  // SOCKET / PANE
-                Constraint::Length(8),   // SRV PID / CLAUDE PID
-                Constraint::Length(12),  // LEAD PID / SHELL PID
-                Constraint::Length(8),   // STATUS
-                Constraint::Length(7),   // PANES / CPU
-                Constraint::Length(10),  // MEM
-                Constraint::Length(20),  // STARTED
-                Constraint::Length(8),   // UPTIME
+                Constraint::Length(28), // SOCKET / PANE
+                Constraint::Length(8),  // SRV PID / CLAUDE PID
+                Constraint::Length(12), // LEAD PID / SHELL PID
+                Constraint::Length(8),  // STATUS
+                Constraint::Length(7),  // PANES / CPU
+                Constraint::Length(10), // MEM
+                Constraint::Length(20), // STARTED
+                Constraint::Length(8),  // UPTIME
                 Constraint::Fill(1),    // AGENT TYPE
             ],
         )
         .header(
-            Row::new(vec!["SOCKET/PANE", "PID", "LEAD/SHELL", "STATUS", "PANES", "MEM", "STARTED", "UPTIME", "TEAM / LAST OUTPUT"])
-                .style(Style::default().add_modifier(Modifier::BOLD))
-                .bottom_margin(1),
+            Row::new(vec![
+                "SOCKET/PANE",
+                "PID",
+                "LEAD/SHELL",
+                "STATUS",
+                "PANES",
+                "MEM",
+                "STARTED",
+                "UPTIME",
+                "TEAM / LAST OUTPUT",
+            ])
+            .style(Style::default().add_modifier(Modifier::BOLD))
+            .bottom_margin(1),
         )
-        .block(Block::default().borders(Borders::ALL).title(" Tmux Servers (claude-swarm) "));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Tmux Servers (claude-swarm) "),
+        );
 
         frame.render_widget(tmux_table, chunks[2]);
     }
@@ -711,8 +876,10 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
     let footer_text = if let Some(msg) = status_msg {
         format!(" {} | q: quit | r: refresh | k: kill zombies", msg)
     } else {
-        format!(" q: quit | r: refresh | k: kill zombies | d: kill PID | a: auto-cleanup | s: settings | {}s",
-            settings.refresh_rate_secs)
+        format!(
+            " q: quit | r: refresh | k: kill zombies | d: kill PID | a: auto-cleanup | s: settings | {}s",
+            settings.refresh_rate_secs
+        )
     };
     let footer_style = if status_msg.is_some() {
         Style::default().fg(sol::GREEN)
@@ -764,49 +931,86 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
 
     for (i, zombie) in zombies.iter().enumerate() {
         let (icon, label, detail) = match zombie {
-            ZombieEntry::Team { name, member_count, task_count, config_dir } => {
-                let config_label = config_dir.file_name()
+            ZombieEntry::Team {
+                name,
+                member_count,
+                task_count,
+                config_dir,
+            } => {
+                let config_label = config_dir
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "?".to_string());
                 (
                     "✗",
                     format!("{}. TEAM: {}", i + 1, name),
-                    format!("   {} members, {} tasks [{}] — owner dead", member_count, task_count, config_label),
+                    format!(
+                        "   {} members, {} tasks [{}] — owner dead",
+                        member_count, task_count, config_label
+                    ),
                 )
             }
-            ZombieEntry::OrphanTmux { socket_name, lead_pid, pane_count, server_pid } => {
-                let pid_str = server_pid.map(|p| format!(" PID:{}", p)).unwrap_or_default();
+            ZombieEntry::OrphanTmux {
+                socket_name,
+                lead_pid,
+                pane_count,
+                server_pid,
+            } => {
+                let pid_str = server_pid
+                    .map(|p| format!(" PID:{}", p))
+                    .unwrap_or_default();
                 (
                     "✗",
                     format!("{}. TMUX: {}", i + 1, socket_name),
-                    format!("   lead:{} {} panes{} — lead dead", lead_pid, pane_count, pid_str),
+                    format!(
+                        "   lead:{} {} panes{} — lead dead",
+                        lead_pid, pane_count, pid_str
+                    ),
                 )
             }
-            ZombieEntry::OrphanShell { socket_name, pane_id, shell_pid } => {
-                (
-                    "·",
-                    format!("{}. SHELL: pane {} (sh:{})", i + 1, pane_id, shell_pid),
-                    format!("   in {} — claude exited", socket_name),
-                )
-            }
-            ZombieEntry::IdleShell { socket_name, pane_id, shell_pid, uptime_secs } => {
-                (
-                    "◌",
-                    format!("{}. IDLE: pane {} (sh:{}, {}m)", i + 1, pane_id, shell_pid, uptime_secs / 60),
-                    format!("   in {} — idle too long", socket_name),
-                )
-            }
-            ZombieEntry::StalePane { socket_name, pane_id, agent_name, reason, .. } => {
-                (
-                    "⊘",
-                    format!("{}. STALE: {} pane {}", i + 1, agent_name, pane_id),
-                    format!("   in {} — {}", socket_name, reason.label()),
-                )
-            }
+            ZombieEntry::OrphanShell {
+                socket_name,
+                pane_id,
+                shell_pid,
+            } => (
+                "·",
+                format!("{}. SHELL: pane {} (sh:{})", i + 1, pane_id, shell_pid),
+                format!("   in {} — claude exited", socket_name),
+            ),
+            ZombieEntry::IdleShell {
+                socket_name,
+                pane_id,
+                shell_pid,
+                uptime_secs,
+            } => (
+                "◌",
+                format!(
+                    "{}. IDLE: pane {} (sh:{}, {}m)",
+                    i + 1,
+                    pane_id,
+                    shell_pid,
+                    uptime_secs / 60
+                ),
+                format!("   in {} — idle too long", socket_name),
+            ),
+            ZombieEntry::StalePane {
+                socket_name,
+                pane_id,
+                agent_name,
+                reason,
+                ..
+            } => (
+                "⊘",
+                format!("{}. STALE: {} pane {}", i + 1, agent_name, pane_id),
+                format!("   in {} — {}", socket_name, reason.label()),
+            ),
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {} ", icon), Style::default().fg(sol::RED)),
-            Span::styled(label, Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                label,
+                Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD),
+            ),
         ]));
         lines.push(Line::from(Span::styled(
             detail,
@@ -816,9 +1020,17 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled(" y", Style::default().fg(sol::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " y",
+            Style::default().fg(sol::GREEN).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": kill all  ", Style::default().fg(sol::BASE0)),
-        Span::styled("any other key", Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "any other key",
+            Style::default()
+                .fg(sol::YELLOW)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(": cancel", Style::default().fg(sol::BASE0)),
     ]));
 
@@ -842,24 +1054,31 @@ fn draw_zombie_dialog(frame: &mut Frame, zombies: &[ZombieEntry]) {
 #[derive(Debug, Clone)]
 struct KillableEntry {
     pid: u32,
-    label: String,    // e.g. "SESSION [2.1.74] [.claude-true]", "MCP:echo-search"
-    detail: String,   // e.g. "melina (main *) 291.3MB"
-    status: String,   // e.g. "working", "ACTIVE", "IDLE"
-    uptime: String,   // e.g. "8h58m", "37m"
-    indent: u8,       // 0 = root (SESSION/SWARM), 1 = child (MCP/PANE)
+    label: String,  // e.g. "SESSION [2.1.74] [.claude-true]", "MCP:echo-search"
+    detail: String, // e.g. "melina (main *) 291.3MB"
+    status: String, // e.g. "working", "ACTIVE", "IDLE"
+    uptime: String, // e.g. "8h58m", "37m"
+    indent: u8,     // 0 = root (SESSION/SWARM), 1 = child (MCP/PANE)
 }
 
 /// State machine for the kill-by-PID dialog.
 enum KillDialogState {
     Closed,
-    Selecting { entries: Vec<KillableEntry>, selected: usize },
-    Confirm { entry: KillableEntry },
+    Selecting {
+        entries: Vec<KillableEntry>,
+        selected: usize,
+    },
+    Confirm {
+        entry: KillableEntry,
+    },
 }
 
 impl KillDialogState {
     fn move_selection(&mut self, count: usize, delta: isize) {
         if let KillDialogState::Selecting { selected, .. } = self {
-            if count == 0 { return; }
+            if count == 0 {
+                return;
+            }
             let new = (*selected as isize + delta).rem_euclid(count as isize) as usize;
             *selected = new;
         }
@@ -872,10 +1091,14 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
 
     // Sessions and their children
     for tree in trees {
-        let cwd_short = tree.working_dir.as_deref()
+        let cwd_short = tree
+            .working_dir
+            .as_deref()
             .and_then(|p| p.rsplit('/').next())
             .unwrap_or("");
-        let git = tree.git_context.as_ref()
+        let git = tree
+            .git_context
+            .as_ref()
             .map(|g| format!(" ({})", g.display()))
             .unwrap_or_default();
         let mem = format!("{:.1}MB", tree.total_memory_bytes as f64 / 1_048_576.0);
@@ -921,9 +1144,18 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
             entries.push(KillableEntry {
                 pid: server_pid,
                 label: format!("SWARM:{}", srv.socket_name),
-                detail: format!("lead:{} {} panes {:.1}KB", srv.lead_pid, srv.panes.len(), srv.memory_bytes as f64 / 1024.0),
+                detail: format!(
+                    "lead:{} {} panes {:.1}KB",
+                    srv.lead_pid,
+                    srv.panes.len(),
+                    srv.memory_bytes as f64 / 1024.0
+                ),
                 status: status.to_string(),
-                uptime: if srv.start_time > 0 { format_uptime(srv.start_time) } else { String::new() },
+                uptime: if srv.start_time > 0 {
+                    format_uptime(srv.start_time)
+                } else {
+                    String::new()
+                },
                 indent: 0,
             });
         }
@@ -943,7 +1175,11 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
                     label: format!("PANE:{}", agent),
                     detail: format!("pane:{} {} {}", pane.pane_id, team, mem),
                     status: pane.status.label().to_string(),
-                    uptime: if pane.start_time > 0 { format_uptime(pane.start_time) } else { String::new() },
+                    uptime: if pane.start_time > 0 {
+                        format_uptime(pane.start_time)
+                    } else {
+                        String::new()
+                    },
                     indent: 1,
                 });
             }
@@ -968,7 +1204,9 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
 
             frame.render_widget(Clear, dialog_area);
 
-            let hdr_style = Style::default().fg(sol::BASE01).add_modifier(Modifier::BOLD);
+            let hdr_style = Style::default()
+                .fg(sol::BASE01)
+                .add_modifier(Modifier::BOLD);
             let header = Row::new(vec![
                 Cell::from("PID").style(hdr_style),
                 Cell::from("KIND").style(hdr_style),
@@ -977,27 +1215,27 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                 Cell::from("DETAIL").style(hdr_style),
             ]);
 
-            let rows: Vec<Row> = entries.iter().enumerate().map(|(i, e)| {
-                let marker = if i == *selected { "> " } else { "  " };
-                let indent_prefix = if e.indent > 0 { "  " } else { "" };
-                let label_style = if e.indent > 0 {
-                    Style::default().fg(sol::CYAN)
-                } else {
-                    Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD)
-                };
-                Row::new(vec![
-                    Cell::from(format!("{}{}", marker, e.pid))
-                        .style(Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
-                    Cell::from(format!("{}{}", indent_prefix, e.label))
-                        .style(label_style),
-                    Cell::from(e.status.as_str())
-                        .style(Style::default().fg(sol::GREEN)),
-                    Cell::from(e.uptime.as_str())
-                        .style(Style::default().fg(sol::YELLOW)),
-                    Cell::from(e.detail.as_str())
-                        .style(Style::default().fg(sol::BASE00)),
-                ])
-            }).collect();
+            let rows: Vec<Row> = entries
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let marker = if i == *selected { "> " } else { "  " };
+                    let indent_prefix = if e.indent > 0 { "  " } else { "" };
+                    let label_style = if e.indent > 0 {
+                        Style::default().fg(sol::CYAN)
+                    } else {
+                        Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD)
+                    };
+                    Row::new(vec![
+                        Cell::from(format!("{}{}", marker, e.pid))
+                            .style(Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
+                        Cell::from(format!("{}{}", indent_prefix, e.label)).style(label_style),
+                        Cell::from(e.status.as_str()).style(Style::default().fg(sol::GREEN)),
+                        Cell::from(e.uptime.as_str()).style(Style::default().fg(sol::YELLOW)),
+                        Cell::from(e.detail.as_str()).style(Style::default().fg(sol::BASE00)),
+                    ])
+                })
+                .collect();
 
             let widths = [
                 Constraint::Length(12),
@@ -1014,7 +1252,11 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(sol::YELLOW))
                         .title(" Kill Process (↑↓ select, Enter confirm, Esc cancel) ")
-                        .title_style(Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)),
+                        .title_style(
+                            Style::default()
+                                .fg(sol::YELLOW)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                 )
                 .row_highlight_style(Style::default().bg(sol::BASE02))
                 .style(Style::default().bg(sol::BASE03));
@@ -1032,9 +1274,18 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
             let lines = vec![
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(" Kill ", Style::default().fg(sol::RED).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("PID:{}", entry.pid), Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" ({})?", entry.label), Style::default().fg(sol::CYAN)),
+                    Span::styled(
+                        " Kill ",
+                        Style::default().fg(sol::RED).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("PID:{}", entry.pid),
+                        Style::default().fg(sol::BASE1).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" ({})?", entry.label),
+                        Style::default().fg(sol::CYAN),
+                    ),
                 ]),
                 Line::from(Span::styled(
                     format!(" {} — {}", entry.status, entry.detail),
@@ -1042,9 +1293,17 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                 )),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(" y", Style::default().fg(sol::RED).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " y",
+                        Style::default().fg(sol::RED).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(": kill  ", Style::default().fg(sol::BASE0)),
-                    Span::styled("any other key", Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "any other key",
+                        Style::default()
+                            .fg(sol::YELLOW)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(": cancel", Style::default().fg(sol::BASE0)),
                 ]),
             ];
@@ -1177,7 +1436,9 @@ fn draw_settings_dialog(frame: &mut Frame, settings: &Settings, selected: usize)
         let is_selected = i == selected;
         let marker = if is_selected { " ▸ " } else { "   " };
         let style = if is_selected {
-            Style::default().fg(sol::YELLOW).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(sol::YELLOW)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(sol::BASE0)
         };
@@ -1185,7 +1446,10 @@ fn draw_settings_dialog(frame: &mut Frame, settings: &Settings, selected: usize)
         lines.push(Line::from(vec![
             Span::styled(marker, style),
             Span::styled(format!("{:<20}", name), style),
-            Span::styled(format!("{}{}", value, unit), Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{}{}", value, unit),
+                Style::default().fg(sol::CYAN).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(arrows, Style::default().fg(sol::BASE01)),
         ]));
     }
@@ -1328,11 +1592,7 @@ mod tests {
             result
         );
         // Should show "2h15m"
-        assert!(
-            result == "2h15m",
-            "Expected '2h15m', got '{}'",
-            result
-        );
+        assert!(result == "2h15m", "Expected '2h15m', got '{}'", result);
     }
 
     #[test]
@@ -1372,11 +1632,7 @@ mod tests {
             result.y
         );
         // Width and height should match requested values
-        assert_eq!(
-            result.width, 60,
-            "Expected width=60, got {}",
-            result.width
-        );
+        assert_eq!(result.width, 60, "Expected width=60, got {}", result.width);
         assert_eq!(
             result.height, 20,
             "Expected height=20, got {}",
@@ -1408,14 +1664,8 @@ mod tests {
             area.height
         );
         // X and Y should still be computed (will be 0 when centered in small area)
-        assert!(
-            result.x < area.width,
-            "X should be within bounds"
-        );
-        assert!(
-            result.y < area.height,
-            "Y should be within bounds"
-        );
+        assert!(result.x < area.width, "X should be within bounds");
+        assert!(result.y < area.height, "Y should be within bounds");
     }
 
     #[test]

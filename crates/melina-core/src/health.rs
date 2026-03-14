@@ -179,7 +179,12 @@ fn check_team_owner_alive(team: &TeamInfo, sys: &System) -> bool {
     let alive = std::fs::read_to_string(&session_path)
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|session| session.get("owner_pid").and_then(|v| v.as_str()).map(String::from))
+        .and_then(|session| {
+            session
+                .get("owner_pid")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
         .and_then(|pid_str| pid_str.parse::<u32>().ok())
         .map(|pid| is_pid_alive(pid, sys));
     alive.unwrap_or(false)
@@ -208,17 +213,21 @@ fn check_teammate_health(member: &TeamMember, team: &TeamInfo, now: u64) -> Team
     // If stuck tasks exist and inbox is stale (but not actively using CPU)
     if !stuck_tasks.is_empty()
         && let Some(age) = inbox_age
-            && age > TEAMMATE_STALE_SECS && !is_cpu_active {
-                return TeammateHealth::Stuck {
-                    task_ids: stuck_tasks,
-                };
-            }
+        && age > TEAMMATE_STALE_SECS
+        && !is_cpu_active
+    {
+        return TeammateHealth::Stuck {
+            task_ids: stuck_tasks,
+        };
+    }
 
     // If inbox is stale (but not actively using CPU)
     if let Some(age) = inbox_age
-        && age > TEAMMATE_STALE_SECS && !is_cpu_active {
-            return TeammateHealth::Stale { idle_secs: age };
-        }
+        && age > TEAMMATE_STALE_SECS
+        && !is_cpu_active
+    {
+        return TeammateHealth::Stale { idle_secs: age };
+    }
 
     TeammateHealth::Active
 }
@@ -247,24 +256,25 @@ fn check_teammate_tasks(team: &TeamInfo, member_name: &str) -> (usize, Vec<Strin
             if path.extension().is_some_and(|e| e == "json")
                 && path.file_name().is_some_and(|n| n != ".lock")
                 && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(task) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let owner = task.get("owner").and_then(|v| v.as_str()).unwrap_or("");
-                        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                && let Ok(task) = serde_json::from_str::<serde_json::Value>(&content)
+            {
+                let owner = task.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("");
 
-                        if owner == member_name {
-                            match status {
-                                "completed" => completed += 1,
-                                "in_progress" => {
-                                    let id = task
-                                        .get("id")
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "?".to_string());
-                                    stuck.push(id);
-                                }
-                                _ => {}
-                            }
+                if owner == member_name {
+                    match status {
+                        "completed" => completed += 1,
+                        "in_progress" => {
+                            let id = task
+                                .get("id")
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "?".to_string());
+                            stuck.push(id);
                         }
+                        _ => {}
                     }
+                }
+            }
         }
     }
 
@@ -341,7 +351,12 @@ impl StalePaneReason {
 
     /// Whether this is safe to auto-kill without confirmation.
     pub fn is_safe_to_kill(&self) -> bool {
-        matches!(self, StalePaneReason::TeamDeletedDone | StalePaneReason::TeamDeletedIdle | StalePaneReason::DoneStale { .. })
+        matches!(
+            self,
+            StalePaneReason::TeamDeletedDone
+                | StalePaneReason::TeamDeletedIdle
+                | StalePaneReason::DoneStale { .. }
+        )
     }
 }
 
@@ -389,7 +404,10 @@ impl ZombieEntry {
             } => {
                 format!(
                     "IDLE SHELL: pane {} (sh:{}, {}m up) in {}",
-                    pane_id, shell_pid, uptime_secs / 60, socket_name
+                    pane_id,
+                    shell_pid,
+                    uptime_secs / 60,
+                    socket_name
                 )
             }
             ZombieEntry::StalePane {
@@ -401,7 +419,10 @@ impl ZombieEntry {
             } => {
                 format!(
                     "STALE PANE: {} pane {} ({}) in {}",
-                    agent_name, pane_id, reason.label(), socket_name
+                    agent_name,
+                    pane_id,
+                    reason.label(),
+                    socket_name
                 )
             }
         }
@@ -498,15 +519,21 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
                             // Lead or agent is dead → truly stale
                             match pane.status {
                                 PaneStatus::Done => Some(StalePaneReason::TeamDeletedDone),
-                                PaneStatus::Idle if !pane.claude_alive => Some(StalePaneReason::TeamDeletedIdle),
+                                PaneStatus::Idle if !pane.claude_alive => {
+                                    Some(StalePaneReason::TeamDeletedIdle)
+                                }
                                 PaneStatus::Idle => None, // agent alive but idle — not stale yet
                                 PaneStatus::Active => None, // agent alive and active — definitely not stale
-                                PaneStatus::Shell => None, // already caught above
+                                PaneStatus::Shell => None,  // already caught above
                             }
                         }
-                    } else if pane.status == PaneStatus::Done && uptime >= IDLE_SHELL_UPTIME_MIN_SECS {
+                    } else if pane.status == PaneStatus::Done
+                        && uptime >= IDLE_SHELL_UPTIME_MIN_SECS
+                    {
                         // Team exists but teammate finished and pane lingers
-                        Some(StalePaneReason::DoneStale { uptime_secs: uptime })
+                        Some(StalePaneReason::DoneStale {
+                            uptime_secs: uptime,
+                        })
                     } else {
                         None
                     };
@@ -548,8 +575,11 @@ pub struct KillZombiesResult {
 
 impl KillZombiesResult {
     pub fn total(&self) -> usize {
-        self.teams_cleaned + self.tmux_cleaned + self.shells_cleaned
-            + self.idle_shells_cleaned + self.stale_panes_cleaned
+        self.teams_cleaned
+            + self.tmux_cleaned
+            + self.shells_cleaned
+            + self.idle_shells_cleaned
+            + self.stale_panes_cleaned
     }
 }
 
@@ -589,7 +619,9 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
         if !report.owner_alive {
             // Skip young teams if uptime filter is active
             if min_uptime_secs > 0 {
-                let oldest_start = team.members.iter()
+                let oldest_start = team
+                    .members
+                    .iter()
                     .filter(|m| m.start_time > 0)
                     .map(|m| m.start_time)
                     .min()
@@ -627,13 +659,12 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
                     match dir.canonicalize() {
                         Ok(canonical) => {
                             if canonical.to_string_lossy().contains("/.claude")
-                                && let Err(e) = std::fs::remove_dir_all(&canonical) {
-                                    result.errors.push(format!(
-                                        "rm {}: {}",
-                                        canonical.display(),
-                                        e
-                                    ));
-                                }
+                                && let Err(e) = std::fs::remove_dir_all(&canonical)
+                            {
+                                result
+                                    .errors
+                                    .push(format!("rm {}: {}", canonical.display(), e));
+                            }
                         }
                         Err(e) => {
                             result
@@ -653,7 +684,8 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
     for srv in &tmux_servers {
         if srv.is_orphan() {
             // Skip young orphan servers if uptime filter is active
-            if min_uptime_secs > 0 && srv.start_time > 0
+            if min_uptime_secs > 0
+                && srv.start_time > 0
                 && now.saturating_sub(srv.start_time) < min_uptime_secs
             {
                 continue;
@@ -694,7 +726,13 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
                             let digits = &pane.pane_id[1..];
                             if digits.chars().all(|c| c.is_ascii_digit()) {
                                 let kill_result = std::process::Command::new("tmux")
-                                    .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
+                                    .args([
+                                        "-L",
+                                        &srv.socket_name,
+                                        "kill-pane",
+                                        "-t",
+                                        &pane.pane_id,
+                                    ])
                                     .output();
                                 if kill_result.is_ok_and(|o| o.status.success()) {
                                     if is_idle {
@@ -714,14 +752,16 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
                                 result.errors.push(format!(
                                     "skipped {} pane with invalid id {:?} in {}",
                                     if is_idle { "idle" } else { "orphan" },
-                                    pane.pane_id, srv.socket_name
+                                    pane.pane_id,
+                                    srv.socket_name
                                 ));
                             }
                         } else {
                             result.errors.push(format!(
                                 "skipped {} pane with invalid id {:?} in {}",
                                 if is_idle { "idle" } else { "orphan" },
-                                pane.pane_id, srv.socket_name
+                                pane.pane_id,
+                                srv.socket_name
                             ));
                         }
                     }
@@ -918,9 +958,10 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
             // Fallback: kill the process directly
             let sys = create_light_system();
             if let Some(proc_) = sys.process(Pid::from_u32(pid))
-                && proc_.kill() {
-                    return Ok(format!("Killed PID {} ({})", pid, label));
-                }
+                && proc_.kill()
+            {
+                return Ok(format!("Killed PID {} ({})", pid, label));
+            }
             Err(format!("Failed to kill PID {} ({})", pid, label))
         }
         ProcessLookupKind::Process { .. } => {
@@ -1354,7 +1395,7 @@ mod tests {
     #[test]
     fn test_auto_cleanup_toggle() {
         let mut ac = AutoCleanup::new();
-        assert!(ac.toggle());  // now enabled
+        assert!(ac.toggle()); // now enabled
         assert!(ac.is_enabled());
         assert!(!ac.toggle()); // now disabled
         assert!(!ac.is_enabled());

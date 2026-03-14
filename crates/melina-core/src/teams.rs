@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use sysinfo::{System, Pid};
+use sysinfo::{Pid, System};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +46,10 @@ pub struct TeamInfo {
 impl TeamInfo {
     /// Non-lead members (actual teammates, not the lead itself).
     pub fn teammates(&self) -> Vec<&TeamMember> {
-        self.members.iter().filter(|m| m.name != "team-lead").collect()
+        self.members
+            .iter()
+            .filter(|m| m.name != "team-lead")
+            .collect()
     }
 }
 
@@ -58,14 +61,16 @@ pub fn scan_teams_cached(cache: &ConfigDirCache) -> Vec<TeamInfo> {
     for config_dir in cache.dirs() {
         let teams_dir = config_dir.join("teams");
         if teams_dir.is_dir()
-            && let Ok(entries) = std::fs::read_dir(&teams_dir) {
-                for entry in entries.flatten() {
-                    if entry.path().is_dir()
-                        && let Some(team) = read_team(&entry.path(), config_dir) {
-                            teams.push(team);
-                        }
+            && let Ok(entries) = std::fs::read_dir(&teams_dir)
+        {
+            for entry in entries.flatten() {
+                if entry.path().is_dir()
+                    && let Some(team) = read_team(&entry.path(), config_dir)
+                {
+                    teams.push(team);
                 }
             }
+        }
     }
 
     teams
@@ -79,19 +84,20 @@ pub fn scan_teams() -> Vec<TeamInfo> {
     for config_dir in config_dirs {
         let teams_dir = config_dir.join("teams");
         if teams_dir.is_dir()
-            && let Ok(entries) = std::fs::read_dir(&teams_dir) {
-                for entry in entries.flatten() {
-                    if entry.path().is_dir()
-                        && let Some(team) = read_team(&entry.path(), &config_dir) {
-                            teams.push(team);
-                        }
+            && let Ok(entries) = std::fs::read_dir(&teams_dir)
+        {
+            for entry in entries.flatten() {
+                if entry.path().is_dir()
+                    && let Some(team) = read_team(&entry.path(), &config_dir)
+                {
+                    teams.push(team);
                 }
             }
+        }
     }
 
     teams
 }
-
 
 fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let config_path = team_dir.join("config.json");
@@ -117,33 +123,36 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let mut task_owners: Vec<String> = Vec::new();
 
     if tasks_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&tasks_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "json")
-                    && path.file_name().is_some_and(|n| n != ".lock")
+        && let Ok(entries) = std::fs::read_dir(&tasks_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json")
+                && path.file_name().is_some_and(|n| n != ".lock")
+            {
+                task_count += 1;
+                // Read task owner to discover in-process teammates
+                if let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(task) = serde_json::from_str::<serde_json::Value>(&content)
+                    && let Some(owner) = task.get("owner").and_then(|v| v.as_str())
+                    && !owner.is_empty()
+                    && owner != "-"
+                    && !task_owners.contains(&owner.to_string())
                 {
-                    task_count += 1;
-                    // Read task owner to discover in-process teammates
-                    if let Ok(content) = std::fs::read_to_string(&path)
-                        && let Ok(task) = serde_json::from_str::<serde_json::Value>(&content)
-                            && let Some(owner) = task.get("owner").and_then(|v| v.as_str())
-                                && !owner.is_empty()
-                                    && owner != "-"
-                                    && !task_owners.contains(&owner.to_string())
-                                {
-                                    task_owners.push(owner.to_string());
-                                }
+                    task_owners.push(owner.to_string());
                 }
             }
         }
+    }
 
     // Add in-process teammates discovered from task owners but missing from config.json
     // Use fuzzy match: skip if owner is a prefix/substring of any known member name
     // (e.g. task owner "codex-phase-handler" matches member "codex-phase-handler-sv")
     let known_names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
     for owner in &task_owners {
-        let already_known = known_names.iter().any(|n| n == owner || n.starts_with(owner) || owner.starts_with(n));
+        let already_known = known_names
+            .iter()
+            .any(|n| n == owner || n.starts_with(owner) || owner.starts_with(n));
         if !already_known {
             members.push(TeamMember {
                 name: owner.clone(),
@@ -213,7 +222,9 @@ pub fn resolve_tmux_pids(teams: &mut [TeamInfo], sys: &System, snapshot: &TmuxSn
                 let claude_proc = sys.processes().values().find(|p| {
                     p.parent() == Some(Pid::from_u32(pane_pid)) && {
                         let name = p.name().to_string_lossy();
-                        let cmd_str = p.cmd().iter()
+                        let cmd_str = p
+                            .cmd()
+                            .iter()
                             .map(|s| s.to_string_lossy())
                             .collect::<Vec<_>>()
                             .join(" ");
@@ -266,13 +277,15 @@ impl TmuxSnapshot {
         use std::collections::HashMap;
         use std::process::Command;
 
-        let ps_output = Command::new("ps")
-            .args(["-eo", "pid,args"])
-            .output();
+        let ps_output = Command::new("ps").args(["-eo", "pid,args"]).output();
 
         let ps_str = match ps_output {
             Ok(ref out) => String::from_utf8_lossy(&out.stdout).to_string(),
-            Err(_) => return Self { sockets: Vec::new() },
+            Err(_) => {
+                return Self {
+                    sockets: Vec::new(),
+                };
+            }
         };
 
         let mut seen: Vec<String> = Vec::new();
@@ -284,14 +297,13 @@ impl TmuxSnapshot {
                 continue;
             }
 
-            let server_pid: Option<u32> = line.split_whitespace().next()
-                .and_then(|s| s.parse().ok());
+            let server_pid: Option<u32> =
+                line.split_whitespace().next().and_then(|s| s.parse().ok());
 
             if let Some(pos) = line.find("claude-swarm-") {
                 let after = &line[pos..];
-                let socket_name: String = after.chars()
-                    .take_while(|c| !c.is_whitespace())
-                    .collect();
+                let socket_name: String =
+                    after.chars().take_while(|c| !c.is_whitespace()).collect();
 
                 let suffix = &socket_name["claude-swarm-".len()..];
                 if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
@@ -304,8 +316,14 @@ impl TmuxSnapshot {
 
                 // Query pane→pid mapping for this socket
                 let output = Command::new("tmux")
-                    .args(["-L", &socket_name, "list-panes", "-a",
-                           "-F", "#{pane_id}|#{pane_pid}"])
+                    .args([
+                        "-L",
+                        &socket_name,
+                        "list-panes",
+                        "-a",
+                        "-F",
+                        "#{pane_id}|#{pane_pid}",
+                    ])
                     .output();
 
                 let mut panes = HashMap::new();
@@ -314,13 +332,18 @@ impl TmuxSnapshot {
                     for pane_line in stdout.lines() {
                         let parts: Vec<&str> = pane_line.splitn(2, '|').collect();
                         if parts.len() == 2
-                            && let Ok(pid) = parts[1].parse::<u32>() {
-                                panes.insert(parts[0].to_string(), pid);
-                            }
+                            && let Ok(pid) = parts[1].parse::<u32>()
+                        {
+                            panes.insert(parts[0].to_string(), pid);
+                        }
                     }
                 }
 
-                sockets.push(TmuxSocketInfo { socket_name, server_pid, panes });
+                sockets.push(TmuxSocketInfo {
+                    socket_name,
+                    server_pid,
+                    panes,
+                });
             }
         }
 
@@ -329,7 +352,8 @@ impl TmuxSnapshot {
 
     /// Get pane map for resolve_tmux_pids (socket → pane_id → pid).
     fn pane_map(&self) -> Vec<(&str, &std::collections::HashMap<String, u32>)> {
-        self.sockets.iter()
+        self.sockets
+            .iter()
             .filter(|s| !s.panes.is_empty())
             .map(|s| (s.socket_name.as_str(), &s.panes))
             .collect()
@@ -426,7 +450,11 @@ impl TmuxServer {
 
 /// Scan all `tmux -L claude-swarm` servers and check if their lead is alive.
 /// Uses a `TmuxSnapshot` and `ConfigDirCache` for shared data.
-pub fn scan_tmux_servers_cached(sys: &System, skip_status: bool, cache: &ConfigDirCache) -> Vec<TmuxServer> {
+pub fn scan_tmux_servers_cached(
+    sys: &System,
+    skip_status: bool,
+    cache: &ConfigDirCache,
+) -> Vec<TmuxServer> {
     let snapshot = TmuxSnapshot::new();
     scan_tmux_servers_from_snapshot(sys, skip_status, Some(cache), &snapshot)
 }
@@ -438,11 +466,21 @@ pub fn scan_tmux_servers(sys: &System, skip_status: bool) -> Vec<TmuxServer> {
 }
 
 /// Scan tmux servers using a pre-built snapshot (shared with resolve_tmux_pids).
-pub fn scan_tmux_servers_with_snapshot(sys: &System, skip_status: bool, cache: Option<&ConfigDirCache>, snapshot: &TmuxSnapshot) -> Vec<TmuxServer> {
+pub fn scan_tmux_servers_with_snapshot(
+    sys: &System,
+    skip_status: bool,
+    cache: Option<&ConfigDirCache>,
+    snapshot: &TmuxSnapshot,
+) -> Vec<TmuxServer> {
     scan_tmux_servers_from_snapshot(sys, skip_status, cache, snapshot)
 }
 
-fn scan_tmux_servers_from_snapshot(sys: &System, skip_status: bool, cache: Option<&ConfigDirCache>, snapshot: &TmuxSnapshot) -> Vec<TmuxServer> {
+fn scan_tmux_servers_from_snapshot(
+    sys: &System,
+    skip_status: bool,
+    cache: Option<&ConfigDirCache>,
+    snapshot: &TmuxSnapshot,
+) -> Vec<TmuxServer> {
     let mut servers: Vec<TmuxServer> = Vec::new();
 
     // Pre-scan shutdown agents once for all panes (only during full refresh)
@@ -461,13 +499,21 @@ fn scan_tmux_servers_from_snapshot(sys: &System, skip_status: bool, cache: Optio
         let lead_alive = sys.process(Pid::from_u32(lead_pid)).is_some();
 
         // Get tmux server memory and start time
-        let server_proc = socket_info.server_pid
+        let server_proc = socket_info
+            .server_pid
             .and_then(|pid| sys.process(Pid::from_u32(pid)));
         let memory_bytes = server_proc.map(|p| p.memory()).unwrap_or(0);
         let start_time = server_proc.map(|p| p.start_time()).unwrap_or(0);
 
         // Query panes using snapshot data
-        let panes = query_tmux_panes_from_snapshot(&socket_info.socket_name, &socket_info.panes, sys, skip_status, cache, shutdown_agents.as_ref());
+        let panes = query_tmux_panes_from_snapshot(
+            &socket_info.socket_name,
+            &socket_info.panes,
+            sys,
+            skip_status,
+            cache,
+            shutdown_agents.as_ref(),
+        );
 
         servers.push(TmuxServer {
             socket_name: socket_info.socket_name.clone(),
@@ -492,24 +538,38 @@ fn query_tmux_panes_from_snapshot(
     cache: Option<&ConfigDirCache>,
     shutdown_agents: Option<&std::collections::HashSet<String>>,
 ) -> Vec<TmuxPane> {
-    pane_map.iter().map(|(pane_id, &shell_pid)| {
-        let pane_id = pane_id.clone();
+    pane_map
+        .iter()
+        .map(|(pane_id, &shell_pid)| {
+            let pane_id = pane_id.clone();
 
-        // Look for a claude child process under this shell
-        let claude_proc = sys.processes().values().find(|p| {
-            p.parent() == Some(Pid::from_u32(shell_pid)) && {
-                let cmd_str = p.cmd().iter()
-                    .map(|s| s.to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                cmd_str.contains("claude") || cmd_str.contains("--agent-id")
-            }
-        });
+            // Look for a claude child process under this shell
+            let claude_proc = sys.processes().values().find(|p| {
+                p.parent() == Some(Pid::from_u32(shell_pid)) && {
+                    let cmd_str = p
+                        .cmd()
+                        .iter()
+                        .map(|s| s.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    cmd_str.contains("claude") || cmd_str.contains("--agent-id")
+                }
+            });
 
-        let (claude_pid, claude_alive, agent_name, agent_type, team_name, memory_bytes, cpu_percent, start_time) =
-            match claude_proc {
+            let (
+                claude_pid,
+                claude_alive,
+                agent_name,
+                agent_type,
+                team_name,
+                memory_bytes,
+                cpu_percent,
+                start_time,
+            ) = match claude_proc {
                 Some(p) => {
-                    let cmd: Vec<String> = p.cmd().iter()
+                    let cmd: Vec<String> = p
+                        .cmd()
+                        .iter()
                         .map(|s| s.to_string_lossy().to_string())
                         .collect();
                     (
@@ -525,47 +585,64 @@ fn query_tmux_panes_from_snapshot(
                 }
                 None => {
                     // Fall back to shell process start_time so STARTED/UPTIME columns aren't blank
-                    let shell_start = sys.process(Pid::from_u32(shell_pid))
+                    let shell_start = sys
+                        .process(Pid::from_u32(shell_pid))
                         .map(|p| p.start_time())
                         .unwrap_or(0);
                     (None, false, None, None, None, 0, 0.0, shell_start)
                 }
             };
 
-        // team_exists check is cheap (filesystem stat) — always do it
-        let team_exists = team_name.as_ref().is_none_or(|tn| {
-            let dirs = match cache {
-                Some(c) => c.dirs().to_vec(),
-                None => discover_config_dirs(),
-            };
-            dirs.iter().any(|d| d.join("teams").join(tn).is_dir())
-        });
+            // team_exists check is cheap (filesystem stat) — always do it
+            let team_exists = team_name.as_ref().is_none_or(|tn| {
+                let dirs = match cache {
+                    Some(c) => c.dirs().to_vec(),
+                    None => discover_config_dirs(),
+                };
+                dirs.iter().any(|d| d.join("teams").join(tn).is_dir())
+            });
 
-        let (last_line, status) = if skip_status {
-            // Quick mode: skip capture-pane and jsonl checks
-            let quick_status = if !claude_alive {
-                PaneStatus::Shell
-            } else if cpu_percent < 0.5 {
-                PaneStatus::Idle
+            let (last_line, status) = if skip_status {
+                // Quick mode: skip capture-pane and jsonl checks
+                let quick_status = if !claude_alive {
+                    PaneStatus::Shell
+                } else if cpu_percent < 0.5 {
+                    PaneStatus::Idle
+                } else {
+                    PaneStatus::Active
+                };
+                (None, quick_status)
             } else {
-                PaneStatus::Active
+                let line = capture_pane_last_line(socket, &pane_id);
+                let st = derive_pane_status(
+                    claude_alive,
+                    cpu_percent,
+                    line.as_deref(),
+                    team_name.as_deref(),
+                    agent_name.as_deref(),
+                    cache,
+                    shutdown_agents,
+                );
+                (line, st)
             };
-            (None, quick_status)
-        } else {
-            let line = capture_pane_last_line(socket, &pane_id);
-            let st = derive_pane_status(
-                claude_alive, cpu_percent, line.as_deref(),
-                team_name.as_deref(), agent_name.as_deref(), cache, shutdown_agents,
-            );
-            (line, st)
-        };
 
-        TmuxPane {
-            pane_id, shell_pid, claude_pid, claude_alive,
-            agent_name, agent_type, team_name, memory_bytes, cpu_percent, start_time,
-            last_line, status, team_exists,
-        }
-    }).collect()
+            TmuxPane {
+                pane_id,
+                shell_pid,
+                claude_pid,
+                claude_alive,
+                agent_name,
+                agent_type,
+                team_name,
+                memory_bytes,
+                cpu_percent,
+                start_time,
+                last_line,
+                status,
+                team_exists,
+            }
+        })
+        .collect()
 }
 
 /// Capture the last meaningful line from a tmux pane.
@@ -573,36 +650,57 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
     use std::process::Command;
 
     let output = Command::new("tmux")
-        .args(["-L", socket, "capture-pane", "-t", pane_id, "-p", "-S", "-30"])
+        .args([
+            "-L",
+            socket,
+            "capture-pane",
+            "-t",
+            pane_id,
+            "-p",
+            "-S",
+            "-30",
+        ])
         .output()
         .ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Find last non-empty, meaningful line (strip control/box-drawing chars)
-    stdout.lines()
+    stdout
+        .lines()
         .rev()
         .filter_map(|l| {
             // Strip non-ASCII control chars and box-drawing Unicode
-            let clean: String = l.chars()
+            let clean: String = l
+                .chars()
                 .filter(|c| {
                     let cp = *c as u32;
                     // Keep ASCII printable (0x20-0x7E) and common Unicode text
                     // Skip: C0/C1 control (0-0x1F, 0x80-0x9F), box drawing (0x2500-0x257F),
                     // block elements (0x2580-0x259F), private use, etc.
                     (0x20..=0x7E).contains(&cp)
-                        || (cp > 0x9F && !(0x2500..=0x259F).contains(&cp)
+                        || (cp > 0x9F
+                            && !(0x2500..=0x259F).contains(&cp)
                             && !(0xE000..=0xF8FF).contains(&cp))
                 })
                 .collect();
             let trimmed = clean.trim().to_string();
 
-            if trimmed.is_empty() { return None; }
+            if trimmed.is_empty() {
+                return None;
+            }
 
             // Skip Claude Code UI chrome lines (prompt, status bar, permissions)
             let skip_patterns = [
-                "❯", "bypass permissions", "rune-plugin", "melina",
-                "shift+tab", "⏵", "⏺", "✻ Worked for", "⎇",
+                "❯",
+                "bypass permissions",
+                "rune-plugin",
+                "melina",
+                "shift+tab",
+                "⏵",
+                "⏺",
+                "✻ Worked for",
+                "⎇",
             ];
             if skip_patterns.iter().any(|p| trimmed.starts_with(p))
                 || trimmed.contains("permissions on")
@@ -614,25 +712,36 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
                 return None;
             }
             // Skip lines that are mostly box-drawing remnants (very short after cleaning)
-            if trimmed.len() < 4 { return None; }
+            if trimmed.len() < 4 {
+                return None;
+            }
 
             Some(trimmed)
         })
         .next()
         .map(|s| {
-            if s.len() > 80 { format!("{}…", &s[..79]) } else { s }
+            if s.len() > 80 {
+                format!("{}…", &s[..79])
+            } else {
+                s
+            }
         })
 }
 
 /// Pre-scan all recent .jsonl files and build a set of agent names that have shutdown_request.
 /// Called once per full refresh cycle to avoid per-pane scanning.
-pub fn scan_all_shutdown_agents(cache: Option<&ConfigDirCache>) -> std::collections::HashSet<String> {
+pub fn scan_all_shutdown_agents(
+    cache: Option<&ConfigDirCache>,
+) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
 
     let owned;
     let config_dirs: &[PathBuf] = match cache {
         Some(c) => c.dirs(),
-        None => { owned = discover_config_dirs(); &owned },
+        None => {
+            owned = discover_config_dirs();
+            &owned
+        }
     };
     let needle_type = "\"type\":\"shutdown_request\"";
     let mut agents = HashSet::new();
@@ -653,7 +762,8 @@ pub fn scan_all_shutdown_agents(cache: Option<&ConfigDirCache>) -> std::collecti
                     for file in files.flatten() {
                         let path = file.path();
                         if path.extension().is_some_and(|e| e == "jsonl") {
-                            let mtime = path.metadata()
+                            let mtime = path
+                                .metadata()
                                 .and_then(|m| m.modified())
                                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                             if mtime < cutoff {
@@ -752,9 +862,10 @@ fn derive_pane_status(
 
     // Signal 3: Check inbox for shutdown/idle messages
     if let (Some(team), Some(agent)) = (team_name, agent_name)
-        && check_inbox_has_shutdown(team, agent, cache) {
-            return PaneStatus::Done;
-        }
+        && check_inbox_has_shutdown(team, agent, cache)
+    {
+        return PaneStatus::Done;
+    }
 
     if cpu_percent < 0.5 {
         return PaneStatus::Idle;
@@ -769,7 +880,10 @@ fn check_transcript_has_shutdown(agent_name: &str, cache: Option<&ConfigDirCache
     let owned;
     let config_dirs: &[PathBuf] = match cache {
         Some(c) => c.dirs(),
-        None => { owned = discover_config_dirs(); &owned },
+        None => {
+            owned = discover_config_dirs();
+            &owned
+        }
     };
     let needle_recipient = format!("\"recipient\":\"{}\"", agent_name);
     let needle_type = "\"type\":\"shutdown_request\"";
@@ -793,7 +907,8 @@ fn check_transcript_has_shutdown(agent_name: &str, cache: Option<&ConfigDirCache
                         let path = file.path();
                         if path.extension().is_some_and(|e| e == "jsonl") {
                             // Check mtime
-                            let mtime = path.metadata()
+                            let mtime = path
+                                .metadata()
                                 .and_then(|m| m.modified())
                                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                             if mtime < cutoff {
@@ -813,7 +928,11 @@ fn check_transcript_has_shutdown(agent_name: &str, cache: Option<&ConfigDirCache
 }
 
 /// Scan last portion of a .jsonl file for shutdown_request to a specific recipient.
-fn scan_jsonl_for_shutdown(path: &std::path::Path, needle_recipient: &str, needle_type: &str) -> bool {
+fn scan_jsonl_for_shutdown(
+    path: &std::path::Path,
+    needle_recipient: &str,
+    needle_type: &str,
+) -> bool {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let file = match std::fs::File::open(path) {
@@ -845,17 +964,33 @@ fn scan_jsonl_for_shutdown(path: &std::path::Path, needle_recipient: &str, needl
 }
 
 /// Check if an agent has shutdown signals in inbox or team-lead inbox.
-fn check_inbox_has_shutdown(team_name: &str, agent_name: &str, cache: Option<&ConfigDirCache>) -> bool {
+fn check_inbox_has_shutdown(
+    team_name: &str,
+    agent_name: &str,
+    cache: Option<&ConfigDirCache>,
+) -> bool {
     let owned;
     let config_dirs: &[PathBuf] = match cache {
         Some(c) => c.dirs(),
-        None => { owned = discover_config_dirs(); &owned },
+        None => {
+            owned = discover_config_dirs();
+            &owned
+        }
     };
     let done_keywords = [
-        "shutdown", "shut down", "terminate",
-        "no work left", "no unblocked tasks", "all tasks complete",
-        "awaiting shutdown", "idle", "tasks done", "seal:",
-        "final integration", "all done", "work complete",
+        "shutdown",
+        "shut down",
+        "terminate",
+        "no work left",
+        "no unblocked tasks",
+        "all tasks complete",
+        "awaiting shutdown",
+        "idle",
+        "tasks done",
+        "seal:",
+        "final integration",
+        "all done",
+        "work complete",
     ];
 
     for config_dir in config_dirs {
@@ -954,7 +1089,9 @@ impl Default for ConfigDirCache {
 impl ConfigDirCache {
     /// Discover config dirs once and cache them.
     pub fn new() -> Self {
-        Self { dirs: discover_config_dirs() }
+        Self {
+            dirs: discover_config_dirs(),
+        }
     }
 
     /// Access the cached directories.

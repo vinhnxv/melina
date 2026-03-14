@@ -1,11 +1,20 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, kill_zombies_auto, format_cleanup_result, AutoCleanup, ChildKind, TeammateHealth, PaneStatus, format_bytes, format_uptime, format_timestamp};
+use melina_core::{
+    AutoCleanup, ChildKind, PaneStatus, TeammateHealth, build_trees, check_team_health,
+    create_process_system, format_bytes, format_cleanup_result, format_timestamp, format_uptime,
+    kill_tmux_server, kill_zombies_auto, refresh_process_system, scan, scan_teams,
+    scan_tmux_servers,
+};
 use sysinfo::{Pid, System};
 
 #[derive(Parser)]
-#[command(name = "melina-cli", about = "Claude Code process monitor (CLI)", version)]
+#[command(
+    name = "melina-cli",
+    about = "Claude Code process monitor (CLI)",
+    version
+)]
 struct Cli {
     /// Output as JSON instead of human-readable
     #[arg(long)]
@@ -67,7 +76,10 @@ fn main() -> Result<()> {
             if auto_cleanup.should_run() {
                 let result = kill_zombies_auto(&sys, 30 * 60);
                 if result.total() > 0 {
-                    println!("\n\x1b[33mAuto-cleanup:\x1b[0m {}", format_cleanup_result(&result));
+                    println!(
+                        "\n\x1b[33mAuto-cleanup:\x1b[0m {}",
+                        format_cleanup_result(&result)
+                    );
                 }
             }
 
@@ -121,7 +133,10 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
         let config = tree.config_label();
         let uptime = format_uptime(tree.root.start_time);
         let mem = format_bytes(tree.total_memory_bytes);
-        let flags = tree.root.cmd.iter()
+        let flags = tree
+            .root
+            .cmd
+            .iter()
             .filter(|c| c.starts_with("--"))
             .cloned()
             .collect::<Vec<_>>()
@@ -130,38 +145,66 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
         let started = format_timestamp(tree.root.start_time);
         println!("║                                                           ║");
         let cpu: f32 = tree.root.cpu_percent
-            + tree.children.iter().map(|c| c.info.cpu_percent).sum::<f32>();
+            + tree
+                .children
+                .iter()
+                .map(|c| c.info.cpu_percent)
+                .sum::<f32>();
         let ver = tree.claude_version.as_deref().unwrap_or("?");
-        let status_display = format!("{} {}", tree.claude_status.colored_symbol(), tree.claude_status.label());
-        println!("║  {} Session {} [PID {}] {:<16} {:>8}  ║",
-            tree.claude_status.colored_symbol(), i + 1, tree.root.pid, config, mem);
+        let status_display = format!(
+            "{} {}",
+            tree.claude_status.colored_symbol(),
+            tree.claude_status.label()
+        );
+        println!(
+            "║  {} Session {} [PID {}] {:<16} {:>8}  ║",
+            tree.claude_status.colored_symbol(),
+            i + 1,
+            tree.root.pid,
+            config,
+            mem
+        );
         println!("║    version: {:<47} ║", ver);
         println!("║    status:  {:<47} ║", status_display);
         println!("║    started: {:<47} ║", started);
-        println!("║    uptime:  {:<47} ║",
-            format!("{}  CPU: {:.1}%  {}", uptime, cpu, flags));
+        println!(
+            "║    uptime:  {:<47} ║",
+            format!("{}  CPU: {:.1}%  {}", uptime, cpu, flags)
+        );
         if let Some(ref cwd) = tree.working_dir {
-            let git_info = tree.git_context.as_ref()
+            let git_info = tree
+                .git_context
+                .as_ref()
                 .map(|g| format!(" ({})", g.display()))
                 .unwrap_or_default();
-            println!("║    cwd:     {:<47} ║", truncate_path(cwd, 47 - git_info.len().min(20)));
+            println!(
+                "║    cwd:     {:<47} ║",
+                truncate_path(cwd, 47 - git_info.len().min(20))
+            );
             if !git_info.is_empty() {
-                println!("║    git:     {:<47} ║", tree.git_context.as_ref().unwrap().display());
+                println!(
+                    "║    git:     {:<47} ║",
+                    tree.git_context.as_ref().unwrap().display()
+                );
             }
         }
         if let Some(ref sid) = tree.session_id {
             println!("║    session: {:<47} ║", sid);
         }
         if let Some(ref tmux) = tree.host_tmux {
-            println!("║    tmux:    {:<47} ║",
-                format!("{} (pane {} PID:{})", tmux, tmux.pane_id, tmux.server_pid));
+            println!(
+                "║    tmux:    {:<47} ║",
+                format!("{} (pane {} PID:{})", tmux, tmux.pane_id, tmux.server_pid)
+            );
         }
 
         // Teams with teammate health
         for team in &tree.teams {
             let report = check_team_health(team, sys);
             let mates = team.teammates();
-            let zombie_count = report.members.iter()
+            let zombie_count = report
+                .members
+                .iter()
                 .filter(|m| !m.health.is_healthy())
                 .count();
 
@@ -173,15 +216,22 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                 ""
             };
 
-            println!("║    team:    {:<47} ║",
-                format!("{} ({} mates, {} tasks){}",
-                    team.name, mates.len(), team.task_count, team_status));
+            println!(
+                "║    team:    {:<47} ║",
+                format!(
+                    "{} ({} mates, {} tasks){}",
+                    team.name,
+                    mates.len(),
+                    team.task_count,
+                    team_status
+                )
+            );
 
             for entry in &report.members {
                 let health_icon = match &entry.health {
-                    TeammateHealth::Active => "\x1b[32m●\x1b[0m",     // green
-                    TeammateHealth::Completed => "\x1b[36m✓\x1b[0m",  // cyan
-                    TeammateHealth::Zombie => "\x1b[31m✗\x1b[0m",     // red
+                    TeammateHealth::Active => "\x1b[32m●\x1b[0m", // green
+                    TeammateHealth::Completed => "\x1b[36m✓\x1b[0m", // cyan
+                    TeammateHealth::Zombie => "\x1b[31m✗\x1b[0m", // red
                     TeammateHealth::Stale { .. } => "\x1b[33m◌\x1b[0m", // yellow
                     TeammateHealth::Stuck { .. } => "\x1b[31m!\x1b[0m", // red
                 };
@@ -206,19 +256,26 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                     .unwrap_or_default();
 
                 let health_str = format!("{}", entry.health);
-                println!("║    ├─ {} {:<22} {:<8} {:<10} {:>8} {:>6} {} {} ║",
+                println!(
+                    "║    ├─ {} {:<22} {:<8} {:<10} {:>8} {:>6} {} {} ║",
                     health_icon,
                     format!("MATE:{}", entry.name),
                     health_str,
-                    pid_str, mem_str, cpu_str, uptime_str,
-                    entry.agent_type);
+                    pid_str,
+                    mem_str,
+                    cpu_str,
+                    uptime_str,
+                    entry.agent_type
+                );
             }
         }
 
         for child in &tree.children {
             let kind_label = match &child.kind {
                 ChildKind::McpServer { server_name } => format!("MCP:{}", server_name),
-                ChildKind::Teammate { name } => format!("TEAMMATE:{}", name.as_deref().unwrap_or("?")),
+                ChildKind::Teammate { name } => {
+                    format!("TEAMMATE:{}", name.as_deref().unwrap_or("?"))
+                }
                 ChildKind::HookScript => "HOOK".to_string(),
                 ChildKind::BashTool => "BASH".to_string(),
                 ChildKind::Unknown => "???".to_string(),
@@ -226,8 +283,10 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
             let child_mem = format_bytes(child.info.memory_bytes);
             let child_cpu = format!("{:.1}%", child.info.cpu_percent);
             let child_started = format_timestamp(child.info.start_time);
-            println!("║    ├─ {:<22} PID:{:<6} {:>8} {:>6} {} ║",
-                kind_label, child.info.pid, child_mem, child_cpu, child_started);
+            println!(
+                "║    ├─ {:<22} PID:{:<6} {:>8} {:>6} {} ║",
+                kind_label, child.info.pid, child_mem, child_cpu, child_started
+            );
         }
 
         if tree.children.is_empty() && tree.teams.is_empty() {
@@ -237,26 +296,39 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
 
     println!("║                                                           ║");
     println!("╠═══════════════════════════════════════════════════════════╣");
-    println!("║  {} sessions │ {} children │ total: {:<23} ║",
-        total_sessions, total_children, format_bytes(total_memory));
+    println!(
+        "║  {} sessions │ {} children │ total: {:<23} ║",
+        total_sessions,
+        total_children,
+        format_bytes(total_memory)
+    );
     println!("╚═══════════════════════════════════════════════════════════╝");
 
     // Show orphan teams (not matched to any live session)
     let all_teams = scan_teams();
-    let orphan_teams: Vec<_> = all_teams.iter().filter(|t| {
-        let report = check_team_health(t, sys);
-        !report.owner_alive
-    }).collect();
+    let orphan_teams: Vec<_> = all_teams
+        .iter()
+        .filter(|t| {
+            let report = check_team_health(t, sys);
+            !report.owner_alive
+        })
+        .collect();
 
     if !orphan_teams.is_empty() {
         println!();
         println!("\x1b[31mOrphan Teams (owner dead):\x1b[0m");
         for team in &orphan_teams {
-            let config_label = team.config_dir.file_name()
+            let config_label = team
+                .config_dir
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "?".to_string());
-            println!("  \x1b[31m✗\x1b[0m {} ({} members) [{}]",
-                team.name, team.members.len(), config_label);
+            println!(
+                "  \x1b[31m✗\x1b[0m {} ({} members) [{}]",
+                team.name,
+                team.members.len(),
+                config_label
+            );
             println!("    dir: {}/teams/{}", team.config_dir.display(), team.name);
         }
         println!("  Run: melina --kill-zombies  to clean up");
@@ -276,22 +348,35 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                 "\x1b[31mORPHAN\x1b[0m"
             };
             let mem = format_bytes(srv.memory_bytes);
-            let pid_str = srv.server_pid.map(|p| format!("PID:{}", p)).unwrap_or_default();
-            let started = if srv.start_time > 0 { format_timestamp(srv.start_time) } else { String::new() };
-            let uptime = if srv.start_time > 0 { format_uptime(srv.start_time) } else { String::new() };
-            println!("║  {} {:<30} lead:{:<8} {:<10} {:>8} ║",
-                status, srv.socket_name, srv.lead_pid, pid_str, mem);
-            println!("║    started: {:<20} uptime: {:<26} ║",
-                started, uptime);
+            let pid_str = srv
+                .server_pid
+                .map(|p| format!("PID:{}", p))
+                .unwrap_or_default();
+            let started = if srv.start_time > 0 {
+                format_timestamp(srv.start_time)
+            } else {
+                String::new()
+            };
+            let uptime = if srv.start_time > 0 {
+                format_uptime(srv.start_time)
+            } else {
+                String::new()
+            };
+            println!(
+                "║  {} {:<30} lead:{:<8} {:<10} {:>8} ║",
+                status, srv.socket_name, srv.lead_pid, pid_str, mem
+            );
+            println!("║    started: {:<20} uptime: {:<26} ║", started, uptime);
             for pane in &srv.panes {
                 let pane_status = match pane.status {
-                    PaneStatus::Active => "\x1b[32m●\x1b[0m",  // green
-                    PaneStatus::Idle   => "\x1b[33m◌\x1b[0m",  // yellow
-                    PaneStatus::Done   => "\x1b[90m✓\x1b[0m",  // gray
-                    PaneStatus::Shell  => "\x1b[90m·\x1b[0m",  // dim
+                    PaneStatus::Active => "\x1b[32m●\x1b[0m", // green
+                    PaneStatus::Idle => "\x1b[33m◌\x1b[0m",   // yellow
+                    PaneStatus::Done => "\x1b[90m✓\x1b[0m",   // gray
+                    PaneStatus::Shell => "\x1b[90m·\x1b[0m",  // dim
                 };
                 let agent = pane.agent_name.as_deref().unwrap_or("shell");
-                let claude_str = pane.claude_pid
+                let claude_str = pane
+                    .claude_pid
                     .map(|p| format!("PID:{}", p))
                     .unwrap_or_default();
                 let mem_str = if pane.memory_bytes > 0 {
@@ -299,22 +384,34 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                 } else {
                     String::new()
                 };
-                let team_label = pane.team_name.as_ref().map(|tn| {
-                    if pane.team_exists {
-                        format!("[{}]", tn)
-                    } else if srv.lead_alive && pane.claude_alive {
-                        // Lead + agent alive, config cleaned early — normal
-                        format!("[{}]", tn)
-                    } else if pane.claude_alive {
-                        // Agent alive but lead dead — true orphan
-                        format!("\x1b[33m[{} ORPHAN]\x1b[0m", tn)
-                    } else {
-                        format!("\x1b[31m[{} CLEANED]\x1b[0m", tn)
-                    }
-                }).unwrap_or_default();
+                let team_label = pane
+                    .team_name
+                    .as_ref()
+                    .map(|tn| {
+                        if pane.team_exists {
+                            format!("[{}]", tn)
+                        } else if srv.lead_alive && pane.claude_alive {
+                            // Lead + agent alive, config cleaned early — normal
+                            format!("[{}]", tn)
+                        } else if pane.claude_alive {
+                            // Agent alive but lead dead — true orphan
+                            format!("\x1b[33m[{} ORPHAN]\x1b[0m", tn)
+                        } else {
+                            format!("\x1b[31m[{} CLEANED]\x1b[0m", tn)
+                        }
+                    })
+                    .unwrap_or_default();
                 let status_label = pane.status.label();
-                println!("║    {} {:<20} {:<6} {:<10} {:>8} pane:{} sh:{} ║",
-                    pane_status, agent, status_label, claude_str, mem_str, pane.pane_id, pane.shell_pid);
+                println!(
+                    "║    {} {:<20} {:<6} {:<10} {:>8} pane:{} sh:{} ║",
+                    pane_status,
+                    agent,
+                    status_label,
+                    claude_str,
+                    mem_str,
+                    pane.pane_id,
+                    pane.shell_pid
+                );
                 if !team_label.is_empty() {
                     println!("║      team: {:<49} ║", team_label);
                 }
@@ -323,8 +420,10 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
         let orphan_count = tmux_servers.iter().filter(|s| s.is_orphan()).count();
         if orphan_count > 0 {
             println!("║                                                           ║");
-            println!("║  \x1b[31m{} orphan server(s)\x1b[0m — run: melina --kill-zombies         ║",
-                orphan_count);
+            println!(
+                "║  \x1b[31m{} orphan server(s)\x1b[0m — run: melina --kill-zombies         ║",
+                orphan_count
+            );
         }
         println!("╚═══════════════════════════════════════════════════════════╝");
     }
@@ -337,9 +436,14 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
             for team in &teams {
                 let report = check_team_health(team, sys);
                 let status = if report.owner_alive { "ALIVE" } else { "DEAD" };
-                println!("  [{}] {} ({} members, {} tasks) @ {}",
-                    status, team.name, team.members.len(), team.task_count,
-                    team.config_dir.display());
+                println!(
+                    "  [{}] {} ({} members, {} tasks) @ {}",
+                    status,
+                    team.name,
+                    team.members.len(),
+                    team.task_count,
+                    team.config_dir.display()
+                );
                 for member in &team.members {
                     println!("    - {} [{}]", member.name, member.agent_type);
                 }
@@ -363,7 +467,13 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
         let tmux_pane_match = tmux_servers.iter().find_map(|srv| {
             srv.panes.iter().find_map(|pane| {
                 if pane.shell_pid == pid || pane.claude_pid == Some(pid) {
-                    Some((srv.socket_name.clone(), pane.pane_id.clone(), pane.shell_pid, pane.claude_pid, pane.agent_name.clone()))
+                    Some((
+                        srv.socket_name.clone(),
+                        pane.pane_id.clone(),
+                        pane.shell_pid,
+                        pane.claude_pid,
+                        pane.agent_name.clone(),
+                    ))
                 } else {
                     None
                 }
@@ -377,25 +487,36 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
 
             // Kill claude process first if alive
             if let Some(cpid) = claude_pid
-                && let Some(proc_) = sys.process(Pid::from_u32(*cpid)) {
-                    proc_.kill();
-                    println!("  \x1b[32m✓\x1b[0m claude PID {} killed", cpid);
-                }
+                && let Some(proc_) = sys.process(Pid::from_u32(*cpid))
+            {
+                proc_.kill();
+                println!("  \x1b[32m✓\x1b[0m claude PID {} killed", cpid);
+            }
 
             // Kill the tmux pane (takes out shell + children)
             let digits = &pane_id[1..];
-            if pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            if pane_id.starts_with('%')
+                && !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit())
+            {
                 let result = std::process::Command::new("tmux")
                     .args(["-L", socket, "kill-pane", "-t", pane_id])
                     .output();
                 if result.is_ok_and(|o| o.status.success()) {
-                    println!("  \x1b[32m✓\x1b[0m tmux pane {} killed (shell PID {})", pane_id, shell_pid);
+                    println!(
+                        "  \x1b[32m✓\x1b[0m tmux pane {} killed (shell PID {})",
+                        pane_id, shell_pid
+                    );
                 } else {
                     // Fallback: kill shell directly
                     if let Some(proc_) = sys.process(Pid::from_u32(*shell_pid))
-                        && proc_.kill() {
-                            println!("  \x1b[32m✓\x1b[0m shell PID {} killed (tmux kill-pane failed)", shell_pid);
-                        }
+                        && proc_.kill()
+                    {
+                        println!(
+                            "  \x1b[32m✓\x1b[0m shell PID {} killed (tmux kill-pane failed)",
+                            shell_pid
+                        );
+                    }
                 }
             }
             continue;
@@ -404,20 +525,29 @@ fn kill_pids(pids: &[u32]) -> Result<()> {
         match sys.process(sysinfo_pid) {
             Some(proc_) => {
                 let name = proc_.name().to_string_lossy().to_string();
-                let cmd_str = proc_.cmd().iter()
+                let cmd_str = proc_
+                    .cmd()
+                    .iter()
                     .map(|s| s.to_string_lossy().to_string())
                     .collect::<Vec<_>>()
                     .join(" ");
 
                 // Safety: only kill claude-related processes
-                if !cmd_str.contains("claude") && !cmd_str.contains("--agent-id") && !name.contains("claude") {
-                    println!("\x1b[33m!\x1b[0m PID {} ({}) is not a Claude process — skipping", pid, name);
+                if !cmd_str.contains("claude")
+                    && !cmd_str.contains("--agent-id")
+                    && !name.contains("claude")
+                {
+                    println!(
+                        "\x1b[33m!\x1b[0m PID {} ({}) is not a Claude process — skipping",
+                        pid, name
+                    );
                     println!("  cmd: {}…", &cmd_str[..cmd_str.len().min(100)]);
                     continue;
                 }
 
                 // Extract agent name if available
-                let agent = cmd_str.split("--agent-name ")
+                let agent = cmd_str
+                    .split("--agent-name ")
                     .nth(1)
                     .and_then(|s| s.split_whitespace().next())
                     .unwrap_or(&name)
@@ -468,12 +598,20 @@ fn kill_zombies() -> Result<()> {
                     // Validate pane ID format to prevent injection (must be % followed by one or more digits)
                     let pane_id = &member.tmux_pane_id;
                     let digits = &pane_id[1..];
-                    if !pane_id.starts_with('%') || digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-                        println!("  Skipping invalid pane ID for {}: {}", member.name, pane_id);
+                    if !pane_id.starts_with('%')
+                        || digits.is_empty()
+                        || !digits.chars().all(|c| c.is_ascii_digit())
+                    {
+                        println!(
+                            "  Skipping invalid pane ID for {}: {}",
+                            member.name, pane_id
+                        );
                         continue;
                     }
-                    println!("  Killing tmux teammate: {} (pane: {})",
-                        member.name, pane_id);
+                    println!(
+                        "  Killing tmux teammate: {} (pane: {})",
+                        member.name, pane_id
+                    );
                     // Try to kill the tmux pane
                     let _ = std::process::Command::new("tmux")
                         .args(["kill-pane", "-t", pane_id])
@@ -490,7 +628,10 @@ fn kill_zombies() -> Result<()> {
                             std::fs::remove_dir_all(&canonical)?;
                             println!("  \x1b[32m✓\x1b[0m team dir removed");
                         } else {
-                            println!("  \x1b[33m!\x1b[0m Skipping team dir - path not under .claude: {}", canonical.display());
+                            println!(
+                                "  \x1b[33m!\x1b[0m Skipping team dir - path not under .claude: {}",
+                                canonical.display()
+                            );
                         }
                     }
                     Err(e) => println!("  \x1b[33m!\x1b[0m Cannot canonicalize team dir: {}", e),
@@ -504,7 +645,10 @@ fn kill_zombies() -> Result<()> {
                             std::fs::remove_dir_all(&canonical)?;
                             println!("  \x1b[32m✓\x1b[0m tasks dir removed");
                         } else {
-                            println!("  \x1b[33m!\x1b[0m Skipping tasks dir - path not under .claude: {}", canonical.display());
+                            println!(
+                                "  \x1b[33m!\x1b[0m Skipping tasks dir - path not under .claude: {}",
+                                canonical.display()
+                            );
                         }
                     }
                     Err(e) => println!("  \x1b[33m!\x1b[0m Cannot canonicalize tasks dir: {}", e),
@@ -520,8 +664,12 @@ fn kill_zombies() -> Result<()> {
     let mut shells_cleaned = 0;
     for srv in &tmux_servers {
         if srv.is_orphan() {
-            println!("\x1b[31m✗\x1b[0m Orphan tmux server: {} (lead {} dead, {} panes)",
-                srv.socket_name, srv.lead_pid, srv.panes.len());
+            println!(
+                "\x1b[31m✗\x1b[0m Orphan tmux server: {} (lead {} dead, {} panes)",
+                srv.socket_name,
+                srv.lead_pid,
+                srv.panes.len()
+            );
             if kill_tmux_server(&srv.socket_name) {
                 println!("  \x1b[32m✓\x1b[0m killed tmux server");
                 tmux_cleaned += 1;
@@ -532,10 +680,15 @@ fn kill_zombies() -> Result<()> {
             // Active server — kill orphan shell panes
             for pane in &srv.panes {
                 if !pane.claude_alive && pane.agent_name.is_none() {
-                    println!("\x1b[90m·\x1b[0m Orphan shell: pane {} (sh:{}) in {}",
-                        pane.pane_id, pane.shell_pid, srv.socket_name);
+                    println!(
+                        "\x1b[90m·\x1b[0m Orphan shell: pane {} (sh:{}) in {}",
+                        pane.pane_id, pane.shell_pid, srv.socket_name
+                    );
                     let digits = &pane.pane_id[1..];
-                    if pane.pane_id.starts_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                    if pane.pane_id.starts_with('%')
+                        && !digits.is_empty()
+                        && digits.chars().all(|c| c.is_ascii_digit())
+                    {
                         let result = std::process::Command::new("tmux")
                             .args(["-L", &srv.socket_name, "kill-pane", "-t", &pane.pane_id])
                             .output();
@@ -671,8 +824,16 @@ mod tests {
             .as_secs();
         let start = now - 30 * 60; // 30 minutes ago
         let result = format_uptime(start);
-        assert!(result.ends_with('m'), "Expected 'Nm' format, got: {}", result);
-        assert!(!result.contains('h'), "Should not contain hours, got: {}", result);
+        assert!(
+            result.ends_with('m'),
+            "Expected 'Nm' format, got: {}",
+            result
+        );
+        assert!(
+            !result.contains('h'),
+            "Should not contain hours, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -684,8 +845,16 @@ mod tests {
             .as_secs();
         let start = now - (2 * 3600 + 30 * 60); // 2h30m ago
         let result = format_uptime(start);
-        assert!(result.contains('h'), "Expected 'NhNm' format, got: {}", result);
-        assert!(result.contains('m'), "Expected 'NhNm' format, got: {}", result);
+        assert!(
+            result.contains('h'),
+            "Expected 'NhNm' format, got: {}",
+            result
+        );
+        assert!(
+            result.contains('m'),
+            "Expected 'NhNm' format, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -713,8 +882,17 @@ mod tests {
         // Path over max_len should have "…" prefix
         let path = "/home/user/projects/very/long/directory/structure/here";
         let result = truncate_path(path, 30);
-        assert!(result.starts_with('…'), "Expected '…' prefix, got: {}", result);
-        assert!(result.len() <= 30, "Expected length <= 30, got: {} ({})", result.len(), result);
+        assert!(
+            result.starts_with('…'),
+            "Expected '…' prefix, got: {}",
+            result
+        );
+        assert!(
+            result.len() <= 30,
+            "Expected length <= 30, got: {} ({})",
+            result.len(),
+            result
+        );
     }
 
     #[test]
@@ -730,7 +908,16 @@ mod tests {
         // Very long path should truncate to max_len
         let path = "/home/user/projects/some/very/long/directory/structure/that/exceeds/the/maximum/length/substantially/with/many/nested/folders";
         let result = truncate_path(path, 40);
-        assert!(result.starts_with('…'), "Expected '…' prefix, got: {}", result);
-        assert!(result.len() <= 40, "Expected length <= 40, got: {} ({})", result.len(), result);
+        assert!(
+            result.starts_with('…'),
+            "Expected '…' prefix, got: {}",
+            result
+        );
+        assert!(
+            result.len() <= 40,
+            "Expected length <= 40, got: {} ({})",
+            result.len(),
+            result
+        );
     }
 }

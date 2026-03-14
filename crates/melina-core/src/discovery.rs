@@ -202,8 +202,15 @@ mod tests {
     fn test_is_claude_session_resolved_symlink_name() {
         // sysinfo reports resolved binary name, not the symlink
         let info = make_process_info(
-            1234, 1, "2.1.75",
-            vec!["claude", "--dangerously-skip-permissions", "--teammate-mode", "tmux"],
+            1234,
+            1,
+            "2.1.75",
+            vec![
+                "claude",
+                "--dangerously-skip-permissions",
+                "--teammate-mode",
+                "tmux",
+            ],
         );
         assert!(info.is_claude_session());
     }
@@ -212,7 +219,9 @@ mod tests {
     fn test_is_claude_session_versioned_binary_path() {
         // Process launched via full versioned path
         let info = make_process_info(
-            1234, 1, "2.1.75",
+            1234,
+            1,
+            "2.1.75",
             vec!["/Users/x/.local/share/claude/versions/2.1.75"],
         );
         assert!(info.is_claude_session());
@@ -222,11 +231,15 @@ mod tests {
     fn test_is_claude_session_excludes_teammates() {
         // Teammate processes have --agent-id and should NOT be sessions
         let info = make_process_info(
-            1234, 1, "2.1.75",
+            1234,
+            1,
+            "2.1.75",
             vec![
                 "/Users/x/.local/share/claude/versions/2.1.75",
-                "--agent-id", "worker-1@rune-work-123",
-                "--agent-name", "worker-1",
+                "--agent-id",
+                "worker-1@rune-work-123",
+                "--agent-name",
+                "worker-1",
                 "--dangerously-skip-permissions",
             ],
         );
@@ -237,9 +250,13 @@ mod tests {
     fn test_is_claude_session_excludes_desktop_app() {
         // Claude.app chrome-native-host is NOT Claude Code
         let info = make_process_info(
-            26785, 1, "chrome-native-host",
-            vec!["/Applications/Claude.app/Contents/Helpers/chrome-native-host",
-                 "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/"],
+            26785,
+            1,
+            "chrome-native-host",
+            vec![
+                "/Applications/Claude.app/Contents/Helpers/chrome-native-host",
+                "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/",
+            ],
         );
         assert!(!info.is_claude_session());
     }
@@ -248,8 +265,14 @@ mod tests {
     fn test_is_claude_session_excludes_powerline() {
         // claude-powerline is a status line tool, not a Claude Code session
         let info = make_process_info(
-            21346, 1, "node",
-            vec!["node", "/Users/x/.npm/_npx/abc/node_modules/.bin/claude-powerline", "--style=powerline"],
+            21346,
+            1,
+            "node",
+            vec![
+                "node",
+                "/Users/x/.npm/_npx/abc/node_modules/.bin/claude-powerline",
+                "--style=powerline",
+            ],
         );
         assert!(!info.is_claude_session());
     }
@@ -258,8 +281,13 @@ mod tests {
     fn test_is_claude_session_excludes_mcp_with_claude_path() {
         // MCP server in a .claude/ path should not be a session
         let info = make_process_info(
-            1234, 1, "python3",
-            vec!["python3", "/home/user/.claude/plugins/echo-search/server.py"],
+            1234,
+            1,
+            "python3",
+            vec![
+                "python3",
+                "/home/user/.claude/plugins/echo-search/server.py",
+            ],
         );
         assert!(!info.is_claude_session());
     }
