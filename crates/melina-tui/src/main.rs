@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
-use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_zombies_auto, kill_process, format_cleanup_result, AutoCleanup, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, PaneStatus};
+use melina_core::{scan, build_trees_with_context, create_process_system, refresh_process_system, check_team_health, scan_tmux_servers_with_snapshot, scan_zombies, kill_zombies, kill_zombies_auto, kill_process, format_cleanup_result, AutoCleanup, ConfigDirCache, TmuxSnapshot, ChildKind, ClaudeSessionStatus, ZombieEntry, SessionTree, TeammateHealth, TmuxServer, TmuxPane, PaneStatus, format_uptime};
 use sysinfo::System;
 use ratatui::{
     prelude::*,
@@ -301,15 +301,21 @@ fn refresh_quick(
     prev_trees: &[SessionTree],
     prev_tmux: &[TmuxServer],
 ) -> (Vec<SessionTree>, Vec<TmuxServer>) {
+    use std::collections::HashMap;
+
     refresh_process_system(sys);
     let cache = ConfigDirCache::new();
     let snapshot = TmuxSnapshot::new();
     let mut trees = build_trees_with_context(scan(sys), sys, true, &cache, &snapshot);
     let mut tmux_servers = scan_tmux_servers_with_snapshot(sys, true, Some(&cache), &snapshot);
 
+    // Build HashMaps for O(1) lookups (avoids O(n²) nested finds)
+    let prev_tree_map: HashMap<u32, &SessionTree> = prev_trees.iter().map(|t| (t.root.pid, t)).collect();
+    let prev_tmux_map: HashMap<&str, &TmuxServer> = prev_tmux.iter().map(|s| (s.socket_name.as_str(), s)).collect();
+
     // Merge cached status from previous full refresh
     for tree in &mut trees {
-        if let Some(prev) = prev_trees.iter().find(|t| t.root.pid == tree.root.pid) {
+        if let Some(prev) = prev_tree_map.get(&tree.root.pid) {
             tree.claude_status = prev.claude_status;
             if tree.git_context.is_none() {
                 tree.git_context = prev.git_context.clone();
@@ -319,9 +325,11 @@ fn refresh_quick(
 
     // Merge cached tmux pane data (last_line, status, team_exists) from previous full refresh
     for srv in &mut tmux_servers {
-        if let Some(prev_srv) = prev_tmux.iter().find(|s| s.socket_name == srv.socket_name) {
+        if let Some(prev_srv) = prev_tmux_map.get(srv.socket_name.as_str()) {
+            // Build pane HashMap for O(1) lookup
+            let prev_pane_map: HashMap<&str, &TmuxPane> = prev_srv.panes.iter().map(|p| (p.pane_id.as_str(), p)).collect();
             for pane in &mut srv.panes {
-                if let Some(prev_pane) = prev_srv.panes.iter().find(|p| p.pane_id == pane.pane_id) {
+                if let Some(prev_pane) = prev_pane_map.get(pane.pane_id.as_str()) {
                     if pane.last_line.is_none() {
                         pane.last_line = prev_pane.last_line.clone();
                     }
@@ -346,20 +354,7 @@ fn format_ts(epoch: u64) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
-fn format_uptime(start_time: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::ZERO)
-        .as_secs();
-    let elapsed = now.saturating_sub(start_time);
-    let hours = elapsed / 3600;
-    let mins = (elapsed % 3600) / 60;
-    if hours > 0 {
-        format!("{}h{}m", hours, mins)
-    } else {
-        format!("{}m", mins)
-    }
-}
+// format_uptime is imported from melina_core::format
 
 fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], status_msg: Option<&str>, sys: &System, auto_cleanup_enabled: bool, settings: &Settings) {
     let area = frame.area();
@@ -653,13 +648,20 @@ fn ui(frame: &mut Frame, trees: &[SessionTree], tmux_servers: &[TmuxServer], sta
                 let pane_started = if pane.start_time > 0 { format_ts(pane.start_time) } else { String::new() };
                 let pane_uptime = if pane.start_time > 0 { format_uptime(pane.start_time) } else { String::new() };
 
-                // Build info: team name (with deleted indicator) + last output
+                // Build info: team name (with config status indicator) + last output
                 let team_label = pane.team_name.as_ref().map(|tn| {
                     let short = tn.split('-').take(3).collect::<Vec<_>>().join("-");
                     if pane.team_exists {
                         short
+                    } else if srv.lead_alive && pane.claude_alive {
+                        // Lead + agent both alive, config cleaned early — normal
+                        short
+                    } else if pane.claude_alive {
+                        // Agent alive but lead is dead — true orphan
+                        format!("{} [ORPHAN]", short)
                     } else {
-                        format!("{} [DELETED]", short)
+                        // Both dead, config gone — cleaned up
+                        format!("{} [CLEANED]", short)
                     }
                 }).unwrap_or_default();
                 let last = pane.last_line.as_deref().unwrap_or("");

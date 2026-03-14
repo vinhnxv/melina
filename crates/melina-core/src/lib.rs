@@ -11,6 +11,7 @@ mod health;
 mod status;
 mod tree;
 mod teams;
+pub mod format;
 
 pub use discovery::{scan, create_process_system, refresh_process_system, ProcessInfo};
 pub use classify::{ChildKind, classify_child};
@@ -19,3 +20,4 @@ pub use health::{Health, check_health, TeammateHealth, TeammateHealthEntry, Team
 pub use status::{ClaudeSessionStatus, detect_status, detect_pane_status};
 pub use tree::{SessionTree, ChildProcess, HostTmux, build_trees, build_trees_with_context};
 pub use teams::{TeamInfo, TeamMember, ConfigDirCache, TmuxSnapshot, scan_teams, scan_teams_cached, resolve_tmux_pids, TmuxServer, TmuxPane, PaneStatus, scan_tmux_servers, scan_tmux_servers_cached, scan_tmux_servers_with_snapshot, kill_tmux_server};
+pub use format::{format_bytes, format_uptime, format_timestamp};

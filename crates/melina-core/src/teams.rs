@@ -99,6 +99,7 @@ pub fn scan_teams() -> Vec<TeamInfo> {
 
 fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let config_path = team_dir.join("config.json");
+    // Intentionally use .ok()? — if config is missing or malformed, skip this team
     let config_str = std::fs::read_to_string(&config_path).ok()?;
     let config: serde_json::Value = serde_json::from_str(&config_str).ok()?;
 

@@ -55,7 +55,9 @@ pub fn check_health(proc: &ProcessInfo, is_mcp: bool, sys: &System) -> Health {
     if status_lower.contains("zombie") {
         return Health::Zombie;
     }
-    if proc.ppid <= 1 || !is_pid_alive(proc.ppid, sys) {
+    // PPID=1 is valid for daemon processes (launchd on macOS, init on Linux)
+    // Only mark as orphan if parent is dead AND not a daemon (PPID != 1)
+    if proc.ppid == 0 || (!is_pid_alive(proc.ppid, sys) && proc.ppid != 1) {
         return Health::Orphan;
     }
     let now = now_epoch();
@@ -492,12 +494,21 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
                 // Stale pane detection: team deleted or work done but pane lingers
                 if let Some(agent) = &pane.agent_name {
                     let reason = if !pane.team_exists {
-                        // Team dir was deleted — classify by pane status
-                        match pane.status {
-                            PaneStatus::Done => Some(StalePaneReason::TeamDeletedDone),
-                            PaneStatus::Idle => Some(StalePaneReason::TeamDeletedIdle),
-                            PaneStatus::Active => Some(StalePaneReason::TeamDeletedActive),
-                            PaneStatus::Shell => None, // already caught above
+                        // Team config dir was deleted.
+                        // If lead is still alive AND agent process is alive,
+                        // this is normal: orchestrator cleaned config while
+                        // agents are still running/finishing. Not stale.
+                        if srv.lead_alive && pane.claude_alive {
+                            None
+                        } else {
+                            // Lead or agent is dead → truly stale
+                            match pane.status {
+                                PaneStatus::Done => Some(StalePaneReason::TeamDeletedDone),
+                                PaneStatus::Idle if !pane.claude_alive => Some(StalePaneReason::TeamDeletedIdle),
+                                PaneStatus::Idle => None, // agent alive but idle — not stale yet
+                                PaneStatus::Active => None, // agent alive and active — definitely not stale
+                                PaneStatus::Shell => None, // already caught above
+                            }
                         }
                     } else if pane.status == PaneStatus::Done && uptime >= IDLE_SHELL_UPTIME_MIN_SECS {
                         // Team exists but teammate finished and pane lingers

@@ -91,40 +91,60 @@ impl SessionTree {
     }
 }
 
+/// Global cache for Claude Code version detection.
+/// Maps binary path → version string. Only populated once per binary.
+use std::sync::Mutex;
+static VERSION_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+
 /// Detect Claude Code version by running the binary with --version.
-/// Caches per binary path to avoid repeated subprocess calls.
+/// Results are cached per binary path to avoid repeated subprocess calls.
 fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
     // Find the claude binary path from cmd
     let binary_path = root.cmd.first().and_then(|first| {
-        if first.contains("claude") {
+        let lower = first.to_lowercase();
+        if lower == "claude" || lower.ends_with("/claude")
+            || ProcessInfo::is_claude_versioned_binary(&lower)
+        {
             Some(first.as_str())
         } else {
-            // Node might be running claude — look for claude in args
-            root.cmd.iter().find(|arg| {
-                arg.contains("claude") && !arg.contains("server.py") && !arg.starts_with("--")
-            }).map(|s| s.as_str())
+            None
         }
     })?;
 
-    // Run `<binary> --version` and capture output
-    let output = std::process::Command::new(binary_path)
-        .arg("--version")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
+    // Check cache first
+    {
+        let cache = VERSION_CACHE.lock().ok()?;
+        if let Some(ref map) = *cache {
+            if let Some(cached) = map.get(binary_path) {
+                return cached.clone();
+            }
+        }
     }
 
-    let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Output is like "2.1.74 (Claude Code)" — extract the version number (first token)
-    let version = version_str
-        .split_whitespace()
-        .next()
-        .unwrap_or(&version_str)
-        .to_string();
+    // Run `<binary> --version` and capture output
+    let result = std::process::Command::new(binary_path)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let version_str = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // Output is like "2.1.74 (Claude Code)" — extract the version number
+            let version = version_str
+                .split_whitespace()
+                .next()
+                .unwrap_or(&version_str)
+                .to_string();
+            if version.is_empty() { None } else { Some(version) }
+        });
 
-    if version.is_empty() { None } else { Some(version) }
+    // Store in cache
+    if let Ok(mut cache) = VERSION_CACHE.lock() {
+        let map = cache.get_or_insert_with(HashMap::new);
+        map.insert(binary_path.to_string(), result.clone());
+    }
+
+    result
 }
 
 /// A raw tmux pane entry from `tmux list-panes`.
@@ -263,7 +283,7 @@ pub fn build_trees_with_context(
             .collect();
 
         let total_memory = root.memory_bytes
-            + children.iter().map(|c| c.info.memory_bytes).sum::<u64>();
+            .saturating_add(children.iter().map(|c| c.info.memory_bytes).sum::<u64>());
 
         let config_dir = detect_config_dir(root, &children);
         let root_health = check_health(root, false, &sys);

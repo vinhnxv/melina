@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, kill_zombies_auto, format_cleanup_result, AutoCleanup, ChildKind, TeammateHealth, PaneStatus};
+use melina_core::{scan, build_trees, create_process_system, refresh_process_system, scan_teams, check_team_health, scan_tmux_servers, kill_tmux_server, kill_zombies_auto, format_cleanup_result, AutoCleanup, ChildKind, TeammateHealth, PaneStatus, format_bytes, format_uptime, format_timestamp};
 use sysinfo::{Pid, System};
 
 #[derive(Parser)]
@@ -302,8 +302,14 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                 let team_label = pane.team_name.as_ref().map(|tn| {
                     if pane.team_exists {
                         format!("[{}]", tn)
+                    } else if srv.lead_alive && pane.claude_alive {
+                        // Lead + agent alive, config cleaned early — normal
+                        format!("[{}]", tn)
+                    } else if pane.claude_alive {
+                        // Agent alive but lead dead — true orphan
+                        format!("\x1b[33m[{} ORPHAN]\x1b[0m", tn)
                     } else {
-                        format!("\x1b[31m[{} DELETED]\x1b[0m", tn)
+                        format!("\x1b[31m[{} CLEANED]\x1b[0m", tn)
                     }
                 }).unwrap_or_default();
                 let status_label = pane.status.label();
@@ -586,41 +592,7 @@ fn truncate_path(path: &str, max_len: usize) -> String {
     format!("…{}", &path[path.len() - (max_len - 1)..])
 }
 
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1}GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{}B", bytes)
-    }
-}
-
-fn format_timestamp(epoch: u64) -> String {
-    use chrono::{DateTime, Local, TimeZone};
-    Local
-        .timestamp_opt(epoch as i64, 0)
-        .single()
-        .map(|dt: DateTime<Local>| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn format_uptime(start_time: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let elapsed = now.saturating_sub(start_time);
-    let hours = elapsed / 3600;
-    let mins = (elapsed % 3600) / 60;
-    if hours > 0 {
-        format!("{}h{}m", hours, mins)
-    } else {
-        format!("{}m", mins)
-    }
-}
+// format_bytes, format_timestamp, format_uptime are imported from melina_core::format
 
 #[cfg(test)]
 mod tests {
