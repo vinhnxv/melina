@@ -88,10 +88,13 @@ pub fn classify_child_simple(proc: &ProcessInfo) -> ChildKind {
 }
 
 /// Check if a command string references a known config directory and classify it.
+/// Matches both absolute paths (`/Users/x/.claude-true-yp/plugins/...`) and
+/// relative paths (`.claude/skills/...`, project-level `.claude/` dirs).
 fn classify_config_dir_process(
     cmd_str: &str,
     config_dirs: &[std::path::PathBuf],
 ) -> Option<ChildKind> {
+    // Check 1: absolute config dir paths (e.g. /Users/x/.claude-true-yp/...)
     for dir in config_dirs {
         let dir_str = dir.to_string_lossy();
         if cmd_str.contains(dir_str.as_ref()) {
@@ -106,7 +109,35 @@ fn classify_config_dir_process(
             });
         }
     }
+
+    // Check 2: relative .claude/ paths (project-level scripts, skills, etc.)
+    // Matches patterns like: .claude/skills/..., .claude/hooks/..., .claude/plugins/...
+    // but NOT .claude-something (those should match via absolute path above).
+    if has_relative_claude_dir(cmd_str) {
+        let process_type = detect_config_process_type(cmd_str);
+        return Some(ChildKind::ConfigDirProcess {
+            config_dir: ".claude".to_string(),
+            process_type,
+        });
+    }
+
     None
+}
+
+/// Check if a command string contains a relative `.claude/` directory reference.
+/// Matches: `.claude/skills/...`, `path/.claude/hooks/...`, etc.
+/// Excludes: `.claude-something/` (custom config dirs handled by absolute path check).
+fn has_relative_claude_dir(cmd_str: &str) -> bool {
+    // Look for .claude/ followed by known subdirectories
+    let claude_patterns = [
+        ".claude/skills/",
+        ".claude/plugins/",
+        ".claude/hooks/",
+        ".claude/shell-snapshots/",
+        ".claude/agents/",
+        ".claude/scripts/",
+    ];
+    claude_patterns.iter().any(|p| cmd_str.contains(p))
 }
 
 /// Determine the sub-type of a config directory process from its command.
@@ -456,7 +487,10 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_config_dir_skill() {
+    fn test_classify_config_dir_skill_relative_path() {
+        // Relative .claude/ paths (project-level) should be detected via
+        // the has_relative_claude_dir() fallback, even when the absolute
+        // config dir path doesn't match.
         let config_dirs = vec![PathBuf::from("/Users/vinhnx/.claude")];
         let proc = make_process_info(
             601,
@@ -467,13 +501,33 @@ mod tests {
                 "arc-batch-workspace/iteration-1",
             ],
         );
-        // Note: cmd contains ".claude/" which matches is_claude_related(), but
-        // also matches config_dir_process since /Users/vinhnx/.claude is a config dir.
-        // However, we need the full path in cmd for config dir matching.
-        // In practice, the process may use relative path. The classify_child check
-        // looks for the full config dir path in cmd_str. If the cmd uses a relative
-        // path like ".claude/skills/...", it won't match "/Users/vinhnx/.claude".
-        // This is a known limitation — relative paths aren't matched.
+        let result = classify_child(&proc, &config_dirs);
+        assert!(
+            matches!(result, ChildKind::ConfigDirProcess { process_type: ConfigProcessType::Skill, .. }),
+            "Expected ConfigDirProcess::Skill for relative .claude/ path, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_classify_config_dir_hooks_relative() {
+        // .claude/hooks/ should be classified as ConfigDirProcess::Hook
+        let proc = make_process_info(
+            604,
+            "bash",
+            vec![
+                "bash",
+                ".claude/hooks/pre-tool-use.sh",
+            ],
+        );
+        let result = classify_child(&proc, &[]);
+        // Note: "hooks/" in cmd also matches HookScript check (higher priority).
+        // The hook check runs BEFORE config dir check, so this will be HookScript.
+        assert!(
+            matches!(result, ChildKind::HookScript),
+            "Hooks in .claude/hooks/ match HookScript first, got {:?}",
+            result
+        );
     }
 
     #[test]
