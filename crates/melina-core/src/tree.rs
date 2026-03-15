@@ -5,9 +5,10 @@ use crate::status::{ClaudeSessionStatus, detect_pane_status};
 use crate::teams::{ConfigDirCache, TeamInfo, TmuxSnapshot, resolve_tmux_pids, scan_teams_cached};
 use crate::{ChildKind, Health, ProcessInfo, check_health, classify_child};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use sysinfo::{Pid, System};
+use tracing::warn;
 
 /// A child process within a session tree.
 #[derive(Debug, Clone, Serialize)]
@@ -50,7 +51,6 @@ pub struct SessionTree {
     pub root_health: Health,
     pub children: Vec<ChildProcess>,
     pub config_dir: Option<PathBuf>,
-    pub terminal: Option<String>,
     pub total_memory_bytes: u64,
     /// Teams owned by this session (from filesystem config.json).
     pub teams: Vec<TeamInfo>,
@@ -202,7 +202,10 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
         // Handle mutex poisoning by recovering the inner data if poisoned.
         // Poisoning only occurs if a panic happened while holding the lock,
         // which shouldn't happen in practice, but we handle it gracefully.
-        let cache = VERSION_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = VERSION_CACHE.lock().unwrap_or_else(|e| {
+            warn!("VERSION_CACHE mutex poisoned, recovering data");
+            e.into_inner()
+        });
         if let Some(ref map) = *cache
             && let Some(cached) = map.get(binary_path)
         {
@@ -234,7 +237,10 @@ fn detect_claude_version(root: &ProcessInfo) -> Option<String> {
     // Store in cache
     // Handle mutex poisoning by recovering the inner data if poisoned.
     {
-        let mut cache = VERSION_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = VERSION_CACHE.lock().unwrap_or_else(|e| {
+            warn!("VERSION_CACHE mutex poisoned, recovering data");
+            e.into_inner()
+        });
         let map = cache.get_or_insert_with(HashMap::new);
         map.insert(binary_path.to_string(), result.clone());
     }
@@ -304,7 +310,14 @@ fn detect_host_tmux(
     // Walk up the parent chain: root.pid → root.ppid → grandparent → ...
     // The claude process itself or one of its ancestors should match a pane_pid.
     let mut current_pid = root.pid;
+    let mut visited = HashSet::new();
     for _ in 0..10 {
+        // Cycle detection: bail out if we've seen this PID before
+        if !visited.insert(current_pid) {
+            warn!("Cycle detected in parent chain at PID {}", current_pid);
+            break;
+        }
+
         // Check if current_pid matches any tmux pane
         if let Some(entry) = tmux_panes.iter().find(|e| e.pane_pid == current_pid) {
             // Skip claude-swarm panes (those are agent tmux, not user tmux)
@@ -454,7 +467,6 @@ pub fn build_trees_with_context(
             root_health,
             children,
             config_dir,
-            terminal: detect_terminal(root),
             total_memory_bytes: total_memory,
             teams,
             session_id,
@@ -565,10 +577,6 @@ fn detect_config_dir(_root: &ProcessInfo, children: &[ChildProcess]) -> Option<P
             }
         }
     }
-    None
-}
-
-fn detect_terminal(_root: &ProcessInfo) -> Option<String> {
     None
 }
 

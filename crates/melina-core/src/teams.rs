@@ -1130,10 +1130,15 @@ pub fn kill_tmux_server(socket: &str) -> bool {
 }
 
 /// Cached set of Claude config directories, computed once per refresh cycle.
+/// Includes TTL-based invalidation to detect new config dirs.
 #[derive(Debug, Clone)]
 pub struct ConfigDirCache {
     dirs: Vec<PathBuf>,
+    last_refresh: std::time::Instant,
 }
+
+/// TTL for ConfigDirCache before it should be refreshed (60 seconds).
+const CACHE_TTL_SECS: u64 = 60;
 
 impl Default for ConfigDirCache {
     fn default() -> Self {
@@ -1146,12 +1151,18 @@ impl ConfigDirCache {
     pub fn new() -> Self {
         Self {
             dirs: discover_config_dirs(),
+            last_refresh: std::time::Instant::now(),
         }
     }
 
     /// Access the cached directories.
     pub fn dirs(&self) -> &[PathBuf] {
         &self.dirs
+    }
+
+    /// Check if the cache should be refreshed based on TTL.
+    pub fn should_refresh(&self) -> bool {
+        self.last_refresh.elapsed().as_secs() >= CACHE_TTL_SECS
     }
 }
 

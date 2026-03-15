@@ -658,12 +658,40 @@ fn kill_zombies_filtered(sys: &System, min_uptime_secs: u64) -> KillZombiesResul
                 if dir.exists() {
                     match dir.canonicalize() {
                         Ok(canonical) => {
-                            if canonical.to_string_lossy().contains("/.claude")
-                                && let Err(e) = std::fs::remove_dir_all(&canonical)
-                            {
-                                result
-                                    .errors
-                                    .push(format!("rm {}: {}", canonical.display(), e));
+                            let canonical_str = canonical.to_string_lossy();
+                            // Validate path is within .claude directory
+                            if !canonical_str.contains("/.claude") {
+                                result.errors.push(format!(
+                                    "rejected path outside .claude: {}",
+                                    canonical.display()
+                                ));
+                                continue;
+                            }
+                            // TOCTOU mitigation: verify it's still a directory (not symlink swapped in)
+                            match std::fs::symlink_metadata(&canonical) {
+                                Ok(meta) if meta.is_dir() => {
+                                    if let Err(e) = std::fs::remove_dir_all(&canonical) {
+                                        result.errors.push(format!(
+                                            "rm {}: {}",
+                                            canonical.display(),
+                                            e
+                                        ));
+                                    }
+                                }
+                                Ok(meta) => {
+                                    result.errors.push(format!(
+                                        "rejected non-directory: {:?} at {}",
+                                        meta.file_type(),
+                                        canonical.display()
+                                    ));
+                                }
+                                Err(e) => {
+                                    result.errors.push(format!(
+                                        "metadata check failed for {}: {}",
+                                        canonical.display(),
+                                        e
+                                    ));
+                                }
                             }
                         }
                         Err(e) => {
@@ -947,11 +975,10 @@ pub fn kill_process(pid: u32) -> Result<String, String> {
             agent_name,
         } => {
             let label = agent_name.as_deref().unwrap_or("shell");
-            // Kill the tmux pane
-            let digits = &pane_id[1..];
+            // Kill the tmux pane - validate pane_id format before slicing
             if pane_id.starts_with('%')
-                && !digits.is_empty()
-                && digits.chars().all(|c| c.is_ascii_digit())
+                && pane_id.len() > 1
+                && pane_id[1..].chars().all(|c| c.is_ascii_digit())
             {
                 let result = std::process::Command::new("tmux")
                     .args(["-L", &socket_name, "kill-pane", "-t", &pane_id])
@@ -1288,13 +1315,14 @@ enum Signal {
 fn send_signal(pid: u32, signal: Signal) -> Result<(), String> {
     use std::process::Command;
 
-    let signal_arg = match signal {
-        Signal::Term => "TERM",
-        Signal::Kill => "KILL",
+    // Use numeric signal values for robustness (15=SIGTERM, 9=SIGKILL)
+    let signal_num: i32 = match signal {
+        Signal::Term => 15,
+        Signal::Kill => 9,
     };
 
     let output = Command::new("kill")
-        .arg(format!("-{}", signal_arg))
+        .arg(format!("-{}", signal_num))
         .arg(pid.to_string())
         .output();
 

@@ -47,6 +47,21 @@ impl ProcessInfo {
     /// via `proc_pidpath()`, `proc.name()` may return `"2.1.75"` instead of
     /// `"claude"`. We therefore rely on cmd args (argv), not the process name.
     pub fn is_claude_session(&self) -> bool {
+        // Fast path: check first argument case-insensitively without joining
+        // Most processes are not Claude-related, so this avoids the expensive
+        // join().to_lowercase() allocation for the common case.
+        let first_arg_is_claude = self.cmd.first().is_some_and(|c| {
+            let c_lower = c.to_lowercase();
+            Self::is_claude_binary(&c_lower) || Self::is_claude_versioned_binary(&c_lower)
+        });
+
+        // Early exit if first arg isn't a claude binary
+        if !first_arg_is_claude {
+            return false;
+        }
+
+        // Now check the full command line for exclusion patterns.
+        // Only allocate the joined string if we passed the first check.
         let cmd_str = self.cmd.join(" ").to_lowercase();
 
         // Must reference "claude" somewhere in the command line
@@ -74,12 +89,7 @@ impl ProcessInfo {
             return false;
         }
 
-        // First arg must be a claude binary or versioned path — NOT node running
-        // a non-claude script that happens to have "claude" in a path segment.
-        self.cmd.first().is_some_and(|c| {
-            let c_lower = c.to_lowercase();
-            Self::is_claude_binary(&c_lower) || Self::is_claude_versioned_binary(&c_lower)
-        })
+        true
     }
 
     /// Check if a binary path is a Claude Code binary (direct name or path ending in /claude).
@@ -95,12 +105,21 @@ impl ProcessInfo {
 
     /// Check if this is a Claude-related child (MCP server, hook, etc.).
     pub fn is_claude_related(&self) -> bool {
-        let cmd_str = self.cmd.join(" ");
-        // Exclude Claude desktop app processes
-        if cmd_str.contains("Claude.app") || cmd_str.contains("claude.app") {
+        // Fast path: check individual args without joining
+        // Avoids string allocation for the common case of non-Claude processes
+        let has_claude_in_args = self.cmd.iter().any(|arg| {
+            let arg_lower = arg.to_lowercase();
+            arg_lower.contains("claude") || arg_lower.contains(".claude/")
+        });
+
+        if !has_claude_in_args {
             return false;
         }
-        cmd_str.contains("claude") || cmd_str.contains(".claude/")
+
+        // Exclude Claude desktop app processes (check with original case for .app paths)
+        self.cmd.iter().all(|arg| {
+            !arg.contains("Claude.app") && !arg.to_lowercase().contains("claude.app")
+        })
     }
 }
 
@@ -141,8 +160,43 @@ pub fn refresh_process_system(sys: &mut System) {
     );
 }
 
+/// Validate that a process with the given PID still matches the expected command fragment.
+///
+/// # Race Condition Warning
+///
+/// PIDs can be reused by the OS between a scan and subsequent kill operations.
+/// After a process exits, its PID may be reassigned to an unrelated process.
+///
+/// **Callers MUST validate process identity before destructive operations** (kill, etc.)
+/// by checking that the command line still matches expectations.
+///
+/// # Example
+/// ```ignore
+/// // Before killing, re-validate the process hasn't been replaced
+/// if validate_process_identity(pid, "claude") {
+///     // Safe to proceed with kill
+/// }
+/// ```
+#[allow(dead_code)]
+pub fn validate_process_identity(sys: &System, pid: u32, expected_cmd_fragment: &str) -> bool {
+    sys.processes()
+        .get(&Pid::from_u32(pid))
+        .is_some_and(|proc_| {
+            proc_.cmd()
+                .iter()
+                .any(|arg| arg.to_string_lossy().to_lowercase().contains(expected_cmd_fragment))
+        })
+}
+
 /// Scan all processes and return Claude-related ones.
 /// Uses a pre-created `System` to avoid redundant allocations.
+///
+/// # Race Condition Warning
+///
+/// The returned `ProcessInfo` snapshots are point-in-time observations.
+/// PIDs can be reused by the OS after a process exits. Before performing
+/// destructive operations (kill, etc.), call `validate_process_identity()`
+/// to confirm the process hasn't been replaced by an unrelated one.
 pub fn scan(sys: &System) -> Vec<ProcessInfo> {
     sys.processes()
         .iter()
