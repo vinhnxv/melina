@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-16
+
+### Added
+- **Config dir process detection**: New `ConfigDirProcess` classification with subtypes (Plugin, Skill, ShellSnapshot, Hook, Script) for processes running from `~/.claude*` directories
+- **Rune plugin detection**: Detect processes from the Rune plugin ecosystem (`plugins/cache/rune-marketplace/rune/*`, `plugins/rune/*`)
+- **`describe_child()` function**: Extract meaningful descriptions for the INFO column instead of just showing process names like "bash" or "zsh"
+- **Relative `.claude/` path detection**: Classify processes using project-level `.claude/` paths (skills, plugins, hooks, shell-snapshots, agents, scripts)
+- **`ConfigProcessType::Script`**: New sub-type for plugin scripts (distinct from MCP servers)
+- **`is_config_dir_process()`**: Config-dir-aware process detection for custom dirs like `.claude-true-yp`
+- **`scan()` with config dirs**: Process scanning now accepts config directories for enhanced detection
+- **`discover_config_dirs()` made public**: Available for cross-crate use
+
+### Changed
+- `classify_child()` now accepts `config_dirs` parameter for config-dir-aware classification
+- TUI shows config dir processes with violet color and descriptive labels (e.g., `PLUGIN[.claude-true-yp]`, `SCRIPT[rune]`)
+- INFO column shows what processes actually do (e.g., "echo-search", "lib/workflow-lock.sh") instead of just "bash"/"zsh"
+
 ## [0.3.3] - 2026-03-15
 
 ### Fixed
@@ -101,6 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CPU usage always showing 0% for tmux panes
 - Address audit findings: orphan detection, performance, safety
 
+[0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
+[0.4.0]: https://github.com/vinhnxv/melina/releases/tag/v0.4.0
 [0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
 [0.3.2]: https://github.com/vinhnxv/melina/releases/tag/v0.3.2
 [0.3.0]: https://github.com/vinhnxv/melina/releases/tag/v0.3.0
