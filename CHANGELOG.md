@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-03-15
+
+### Fixed
+- **BACK-001**: Fix potential panic in string slice operation with length check
+- **BACK-002**: Add TOCTOU mitigation with symlink_metadata verification before directory removal
+- **BACK-003**: Add `validate_process_identity()` helper for PID reuse protection
+- **BACK-005**: Add warn logging for mutex poisoning recovery
+- **BACK-006**: Add HashSet cycle detection in parent chain traversal
+- **BACK-007**: Add 60-second TTL to ConfigDirCache with should_refresh() method
+- **DEAD-001**: Remove unused `terminal` field and `detect_terminal()` stub
+- **PERF-003**: Optimize string allocations in process discovery hot path
+- **SEC-001**: Use numeric signal values (15/SIGTERM, 9/SIGKILL) instead of string names
+
+### Changed
+- Added missing `tracing` dependency to melina-core Cargo.toml
+
 ## [0.3.2] - 2026-03-15
 
 ### Fixed
@@ -85,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CPU usage always showing 0% for tmux panes
 - Address audit findings: orphan detection, performance, safety
 
+[0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
 [0.3.2]: https://github.com/vinhnxv/melina/releases/tag/v0.3.2
 [0.3.0]: https://github.com/vinhnxv/melina/releases/tag/v0.3.0
 [0.2.1]: https://github.com/vinhnxv/melina/releases/tag/v0.2.1
