@@ -13,8 +13,10 @@ mod status;
 mod teams;
 mod tree;
 
-pub use classify::{ChildKind, classify_child};
-pub use discovery::{ProcessInfo, create_process_system, refresh_process_system, scan};
+pub use classify::{
+    ChildKind, ConfigProcessType, classify_child, classify_child_simple, describe_child,
+};
+pub use discovery::{ProcessInfo, create_process_system, refresh_process_system, scan, scan_simple};
 pub use format::{format_bytes, format_timestamp, format_uptime};
 pub use git::GitContext;
 pub use health::{
@@ -27,7 +29,7 @@ pub use health::{
 pub use status::{ClaudeSessionStatus, detect_pane_status, detect_status};
 pub use teams::{
     ConfigDirCache, PaneStatus, TeamInfo, TeamMember, TmuxPane, TmuxServer, TmuxSnapshot,
-    kill_tmux_server, resolve_tmux_pids, scan_teams, scan_teams_cached, scan_tmux_servers,
-    scan_tmux_servers_cached, scan_tmux_servers_with_snapshot,
+    discover_config_dirs, kill_tmux_server, resolve_tmux_pids, scan_teams, scan_teams_cached,
+    scan_tmux_servers, scan_tmux_servers_cached, scan_tmux_servers_with_snapshot,
 };
 pub use tree::{ChildProcess, HostTmux, SessionTree, build_trees, build_trees_with_context};

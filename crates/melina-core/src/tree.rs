@@ -397,7 +397,7 @@ pub fn build_trees_with_context(
             .iter()
             .filter(|p| p.ppid == root.pid && p.pid != root.pid)
             .map(|p| {
-                let kind = classify_child(p);
+                let kind = classify_child(p, cache.dirs());
                 let is_mcp = matches!(kind, ChildKind::McpServer { .. });
                 let health = check_health(p, is_mcp, sys);
                 ChildProcess {

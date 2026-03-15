@@ -6,11 +6,11 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use melina_core::{
-    AutoCleanup, ChildKind, ClaudeSessionStatus, ConfigDirCache, PaneStatus, SessionTree,
-    TeammateHealth, TmuxPane, TmuxServer, TmuxSnapshot, ZombieEntry, build_trees_with_context,
-    check_team_health, create_process_system, format_cleanup_result, format_uptime, kill_process,
-    kill_zombies, kill_zombies_auto, refresh_process_system, scan, scan_tmux_servers_with_snapshot,
-    scan_zombies,
+    AutoCleanup, ChildKind, ClaudeSessionStatus, ConfigDirCache, ConfigProcessType, PaneStatus,
+    SessionTree, TeammateHealth, TmuxPane, TmuxServer, TmuxSnapshot, ZombieEntry,
+    build_trees_with_context, check_team_health, create_process_system, describe_child,
+    format_cleanup_result, format_uptime, kill_process, kill_zombies, kill_zombies_auto,
+    refresh_process_system, scan, scan_tmux_servers_with_snapshot, scan_zombies,
 };
 use ratatui::{
     prelude::*,
@@ -42,6 +42,41 @@ mod sol {
     pub const BLUE: Color = Color::Rgb(38, 139, 210);
     pub const CYAN: Color = Color::Rgb(42, 161, 152);
     pub const GREEN: Color = Color::Rgb(133, 153, 0);
+}
+
+/// Format child kind for display in the KIND column.
+fn format_child_kind(kind: &ChildKind) -> String {
+    match kind {
+        ChildKind::McpServer { server_name } => format!("MCP:{}", server_name),
+        ChildKind::Teammate { name } => format!("MATE:{}", name.as_deref().unwrap_or("?")),
+        ChildKind::HookScript => "HOOK".to_string(),
+        ChildKind::ConfigDirProcess {
+            config_dir,
+            process_type,
+        } => {
+            let type_label = match process_type {
+                ConfigProcessType::Plugin => "PLUGIN",
+                ConfigProcessType::Skill => "SKILL",
+                ConfigProcessType::ShellSnapshot => "SHELL",
+                ConfigProcessType::Hook => "HOOK",
+                ConfigProcessType::Other => "CONF",
+            };
+            format!("{}[{}]", type_label, config_dir)
+        }
+        ChildKind::BashTool => "BASH".to_string(),
+        ChildKind::Unknown => "???".to_string(),
+    }
+}
+
+/// Get style for a child kind.
+fn child_kind_style(kind: &ChildKind) -> Style {
+    match kind {
+        ChildKind::McpServer { .. } => Style::default().fg(sol::CYAN),
+        ChildKind::Teammate { .. } => Style::default().fg(sol::GREEN),
+        ChildKind::HookScript => Style::default().fg(sol::MAGENTA),
+        ChildKind::ConfigDirProcess { .. } => Style::default().fg(sol::VIOLET),
+        _ => Style::default().fg(sol::BASE01),
+    }
 }
 
 fn main() -> Result<()> {
@@ -315,7 +350,7 @@ fn refresh_full(sys: &mut System) -> (Vec<SessionTree>, Vec<TmuxServer>) {
     refresh_process_system(sys);
     let cache = ConfigDirCache::new();
     let snapshot = TmuxSnapshot::new();
-    let trees = build_trees_with_context(scan(sys), sys, false, &cache, &snapshot);
+    let trees = build_trees_with_context(scan(sys, cache.dirs()), sys, false, &cache, &snapshot);
     let tmux_servers = scan_tmux_servers_with_snapshot(sys, false, 0, Some(&cache), &snapshot);
     (trees, tmux_servers)
 }
@@ -332,7 +367,7 @@ fn refresh_quick(
     refresh_process_system(sys);
     let cache = ConfigDirCache::new();
     let snapshot = TmuxSnapshot::new();
-    let mut trees = build_trees_with_context(scan(sys), sys, true, &cache, &snapshot);
+    let mut trees = build_trees_with_context(scan(sys, cache.dirs()), sys, true, &cache, &snapshot);
     let mut tmux_servers = scan_tmux_servers_with_snapshot(sys, true, 0, Some(&cache), &snapshot);
 
     // Build HashMaps for O(1) lookups (avoids O(n²) nested finds)
@@ -649,19 +684,8 @@ fn ui(
         // Child processes (indented under parent session)
         let child_count = tree.children.len();
         for (ci, child) in tree.children.iter().enumerate() {
-            let kind_str = match &child.kind {
-                ChildKind::McpServer { server_name } => format!("MCP:{}", server_name),
-                ChildKind::Teammate { name } => format!("MATE:{}", name.as_deref().unwrap_or("?")),
-                ChildKind::HookScript => "HOOK".to_string(),
-                ChildKind::BashTool => "BASH".to_string(),
-                ChildKind::Unknown => "???".to_string(),
-            };
-            let style = match &child.kind {
-                ChildKind::McpServer { .. } => Style::default().fg(sol::CYAN),
-                ChildKind::Teammate { .. } => Style::default().fg(sol::GREEN),
-                ChildKind::HookScript => Style::default().fg(sol::MAGENTA),
-                _ => Style::default().fg(sol::BASE01),
-            };
+            let kind_str = format_child_kind(&child.kind);
+            let style = child_kind_style(&child.kind);
             let prefix = if ci == child_count - 1 {
                 "  └─"
             } else {
@@ -669,6 +693,7 @@ fn ui(
             };
             let child_started = format_ts(child.info.start_time);
             let child_uptime = format_uptime(child.info.start_time);
+            let info = describe_child(&child.info, &child.kind);
             rows.push(
                 Row::new(vec![
                     prefix.to_string(),
@@ -679,7 +704,7 @@ fn ui(
                     child_started,
                     child_uptime,
                     String::new(), // STATUS
-                    child.info.name.clone(),
+                    info,
                     String::new(), // TMUX
                 ])
                 .style(style),
@@ -1117,18 +1142,13 @@ fn build_killable_list(trees: &[SessionTree], tmux_servers: &[TmuxServer]) -> Ve
         });
 
         for child in &tree.children {
-            let kind = match &child.kind {
-                ChildKind::McpServer { server_name } => format!("MCP:{}", server_name),
-                ChildKind::Teammate { name } => format!("MATE:{}", name.as_deref().unwrap_or("?")),
-                ChildKind::HookScript => "HOOK".to_string(),
-                ChildKind::BashTool => "BASH".to_string(),
-                ChildKind::Unknown => "???".to_string(),
-            };
+            let kind = format_child_kind(&child.kind);
+            let info = describe_child(&child.info, &child.kind);
             let mem = format!("{:.1}MB", child.info.memory_bytes as f64 / 1_048_576.0);
             entries.push(KillableEntry {
                 pid: child.info.pid,
                 label: kind,
-                detail: format!("{} {}", child.info.name, mem),
+                detail: format!("{} {}", info, mem),
                 status: child.health.label().to_string(),
                 uptime: format_uptime(child.info.start_time),
                 indent: 1,

@@ -121,6 +121,20 @@ impl ProcessInfo {
             !arg.contains("Claude.app") && !arg.to_lowercase().contains("claude.app")
         })
     }
+
+    /// Check if this process references any known Claude config directory.
+    /// Catches processes from custom config dirs like `.claude-true-yp/` that
+    /// `is_claude_related()` would miss (it only matches `.claude/`).
+    pub fn is_config_dir_process(&self, config_dirs: &[std::path::PathBuf]) -> bool {
+        if config_dirs.is_empty() {
+            return false;
+        }
+        self.cmd.iter().any(|arg| {
+            config_dirs
+                .iter()
+                .any(|dir| arg.contains(&*dir.to_string_lossy()))
+        })
+    }
 }
 
 /// Create a `System` that loads process info with accurate CPU values.
@@ -190,6 +204,7 @@ pub fn validate_process_identity(sys: &System, pid: u32, expected_cmd_fragment: 
 
 /// Scan all processes and return Claude-related ones.
 /// Uses a pre-created `System` to avoid redundant allocations.
+/// Accepts `config_dirs` to detect processes from custom Claude config directories.
 ///
 /// # Race Condition Warning
 ///
@@ -197,18 +212,26 @@ pub fn validate_process_identity(sys: &System, pid: u32, expected_cmd_fragment: 
 /// PIDs can be reused by the OS after a process exits. Before performing
 /// destructive operations (kill, etc.), call `validate_process_identity()`
 /// to confirm the process hasn't been replaced by an unrelated one.
-pub fn scan(sys: &System) -> Vec<ProcessInfo> {
+pub fn scan(sys: &System, config_dirs: &[std::path::PathBuf]) -> Vec<ProcessInfo> {
     sys.processes()
         .iter()
         .filter_map(|(&pid, proc_)| {
             let info = ProcessInfo::from_process(pid, proc_);
-            if info.is_claude_session() || info.is_claude_related() {
+            if info.is_claude_session()
+                || info.is_claude_related()
+                || info.is_config_dir_process(config_dirs)
+            {
                 Some(info)
             } else {
                 None
             }
         })
         .collect()
+}
+
+/// Scan without config dir awareness (backward compatible).
+pub fn scan_simple(sys: &System) -> Vec<ProcessInfo> {
+    scan(sys, &[])
 }
 
 #[cfg(test)]

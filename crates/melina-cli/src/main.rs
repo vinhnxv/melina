@@ -3,9 +3,9 @@ use chrono::Local;
 use clap::{Parser, Subcommand};
 use melina_core::{
     AutoCleanup, ChildKind, PaneStatus, TeammateHealth, build_trees, check_team_health,
-    create_process_system, format_bytes, format_cleanup_result, format_timestamp, format_uptime,
-    kill_swarm, kill_tmux_server, kill_zombies_auto, refresh_process_system, scan, scan_teams,
-    scan_tmux_servers,
+    create_process_system, discover_config_dirs, format_bytes, format_cleanup_result,
+    format_timestamp, format_uptime, kill_swarm, kill_tmux_server, kill_zombies_auto,
+    refresh_process_system, scan, scan_teams, scan_tmux_servers,
 };
 use sysinfo::{Pid, System};
 
@@ -137,7 +137,8 @@ fn render(cli: &Cli) -> Result<()> {
 
 fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
     refresh_process_system(sys);
-    let processes = scan(sys);
+    let config_dirs = discover_config_dirs();
+    let processes = scan(sys, &config_dirs);
     let trees = build_trees(processes, sys, false);
 
     if cli.json {
@@ -317,6 +318,19 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                     format!("TEAMMATE:{}", name.as_deref().unwrap_or("?"))
                 }
                 ChildKind::HookScript => "HOOK".to_string(),
+                ChildKind::ConfigDirProcess {
+                    config_dir,
+                    process_type,
+                } => {
+                    let type_label = match process_type {
+                        melina_core::ConfigProcessType::Plugin => "PLUGIN",
+                        melina_core::ConfigProcessType::Skill => "SKILL",
+                        melina_core::ConfigProcessType::ShellSnapshot => "SHELL",
+                        melina_core::ConfigProcessType::Hook => "HOOK",
+                        melina_core::ConfigProcessType::Other => "CONF",
+                    };
+                    format!("{}[{}]", type_label, config_dir)
+                }
                 ChildKind::BashTool => "BASH".to_string(),
                 ChildKind::Unknown => "???".to_string(),
             };

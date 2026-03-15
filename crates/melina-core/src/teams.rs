@@ -1167,7 +1167,7 @@ impl ConfigDirCache {
 }
 
 /// Find all possible Claude config directories.
-fn discover_config_dirs() -> Vec<PathBuf> {
+pub fn discover_config_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     if let Some(home) = dirs::home_dir() {
