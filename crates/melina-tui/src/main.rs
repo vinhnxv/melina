@@ -59,6 +59,7 @@ fn format_child_kind(kind: &ChildKind) -> String {
                 ConfigProcessType::Skill => "SKILL",
                 ConfigProcessType::ShellSnapshot => "SHELL",
                 ConfigProcessType::Hook => "HOOK",
+                ConfigProcessType::Script => "SCRIPT",
                 ConfigProcessType::Other => "CONF",
             };
             format!("{}[{}]", type_label, config_dir)

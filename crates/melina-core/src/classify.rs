@@ -26,7 +26,7 @@ pub enum ChildKind {
 /// Sub-classification for processes originating from a Claude config directory.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum ConfigProcessType {
-    /// MCP plugin server (plugins/)
+    /// MCP plugin server (plugins/, server.py)
     Plugin,
     /// Skill script (skills/)
     Skill,
@@ -34,6 +34,8 @@ pub enum ConfigProcessType {
     ShellSnapshot,
     /// Hook from config dir (hooks/)
     Hook,
+    /// Script from plugin scripts/ directory
+    Script,
     /// Other config dir process
     Other,
 }
@@ -121,6 +123,13 @@ fn classify_config_dir_process(
         });
     }
 
+    // Check 3: Rune plugin paths — scripts, hooks, MCP servers from the rune plugin
+    // These may live outside ~/.claude (e.g. /path/to/rune-plugin/plugins/rune/...)
+    // or in the plugin cache (plugins/cache/rune-marketplace/rune/...)
+    if let Some(kind) = classify_rune_plugin_process(cmd_str) {
+        return Some(kind);
+    }
+
     None
 }
 
@@ -128,7 +137,6 @@ fn classify_config_dir_process(
 /// Matches: `.claude/skills/...`, `path/.claude/hooks/...`, etc.
 /// Excludes: `.claude-something/` (custom config dirs handled by absolute path check).
 fn has_relative_claude_dir(cmd_str: &str) -> bool {
-    // Look for .claude/ followed by known subdirectories
     let claude_patterns = [
         ".claude/skills/",
         ".claude/plugins/",
@@ -138,6 +146,45 @@ fn has_relative_claude_dir(cmd_str: &str) -> bool {
         ".claude/scripts/",
     ];
     claude_patterns.iter().any(|p| cmd_str.contains(p))
+}
+
+/// Classify processes from the Rune plugin ecosystem.
+/// Matches paths like:
+/// - `plugins/cache/rune-marketplace/rune/1.167.0/scripts/echo-search/server.py`
+/// - `plugins/rune/scripts/...`
+/// - `plugins/rune/hooks/...`
+/// - `/path/to/rune-plugin/plugins/rune/...`
+fn classify_rune_plugin_process(cmd_str: &str) -> Option<ChildKind> {
+    let is_rune = cmd_str.contains("plugins/cache/rune-marketplace/rune/")
+        || cmd_str.contains("plugins/rune/")
+        || cmd_str.contains("rune-plugin/");
+
+    if !is_rune {
+        return None;
+    }
+
+    let process_type = detect_rune_process_type(cmd_str);
+    Some(ChildKind::ConfigDirProcess {
+        config_dir: "rune".to_string(),
+        process_type,
+    })
+}
+
+/// Determine the sub-type of a Rune plugin process.
+fn detect_rune_process_type(cmd_str: &str) -> ConfigProcessType {
+    if cmd_str.contains("server.py") || cmd_str.contains("/mcp/") {
+        ConfigProcessType::Plugin
+    } else if cmd_str.contains("skills/") {
+        ConfigProcessType::Skill
+    } else if cmd_str.contains("shell-snapshots/") || cmd_str.contains("shell_snapshots/") {
+        ConfigProcessType::ShellSnapshot
+    } else if cmd_str.contains("hooks/") {
+        ConfigProcessType::Hook
+    } else if cmd_str.contains("scripts/") {
+        ConfigProcessType::Script
+    } else {
+        ConfigProcessType::Other
+    }
 }
 
 /// Determine the sub-type of a config directory process from its command.
@@ -184,6 +231,12 @@ pub fn describe_child(proc: &ProcessInfo, kind: &ChildKind) -> String {
                 ConfigProcessType::Hook => {
                     extract_script_name(&cmd_str).unwrap_or_else(|| "hook".to_string())
                 }
+                ConfigProcessType::Script => {
+                    // Extract script name from path like .../scripts/echo-search/server.py
+                    extract_rune_script_name(&cmd_str)
+                        .or_else(|| extract_script_name(&cmd_str))
+                        .unwrap_or_else(|| "script".to_string())
+                }
                 ConfigProcessType::Other => {
                     extract_script_name(&cmd_str).unwrap_or_else(|| proc.name.clone())
                 }
@@ -204,6 +257,28 @@ fn extract_script_name(cmd: &str) -> Option<String> {
         if part.ends_with(".py") || part.ends_with(".sh") || part.ends_with(".js") {
             let name = part.rsplit('/').next().unwrap_or(part);
             return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Extract Rune script name from path like .../scripts/echo-search/server.py
+/// or .../scripts/lib/workflow-lock.sh
+fn extract_rune_script_name(cmd: &str) -> Option<String> {
+    if let Some(pos) = cmd.find("scripts/") {
+        let after = &cmd[pos + 8..];
+        let parts: Vec<&str> = after.splitn(3, '/').collect();
+        if !parts.is_empty() {
+            // If it's "lib/something", include both
+            let name = if parts[0] == "lib" && parts.len() > 1 {
+                format!("lib/{}", parts[1])
+            } else {
+                parts[0].to_string()
+            };
+            // Don't return just "scripts" — filter too-short or empty
+            if name.len() > 1 {
+                return Some(name);
+            }
         }
     }
     None
@@ -598,5 +673,100 @@ mod tests {
         let kind = ChildKind::BashTool;
         let desc = describe_child(&proc, &kind);
         assert_eq!(desc, "bash"); // fallback to process name
+    }
+
+    // ========== Rune plugin process tests ==========
+
+    #[test]
+    fn test_classify_rune_plugin_cache_mcp() {
+        // MCP server in rune plugin cache — server.py triggers McpServer (higher priority)
+        let proc = make_process_info(
+            800,
+            "python3",
+            vec![
+                "python3",
+                "/Users/x/.claude-yp/plugins/cache/rune-marketplace/rune/1.167.0/scripts/echo-search/server.py",
+            ],
+        );
+        // server.py is caught by MCP check first
+        let result = classify_child(&proc, &[]);
+        assert!(matches!(result, ChildKind::McpServer { .. }));
+    }
+
+    #[test]
+    fn test_classify_rune_plugin_script() {
+        // Script in rune plugin (not server.py, not mcp)
+        let proc = make_process_info(
+            801,
+            "bash",
+            vec![
+                "bash",
+                "/Users/x/.claude-yp/plugins/cache/rune-marketplace/rune/1.167.0/scripts/lib/workflow-lock.sh",
+            ],
+        );
+        // The "hooks/" check and bash name check run before, but this has "hook" nowhere
+        // and has "plugins/cache/rune-marketplace/rune/" — should match rune plugin
+        let result = classify_child(&proc, &[]);
+        assert!(
+            matches!(result, ChildKind::ConfigDirProcess { ref config_dir, process_type: ConfigProcessType::Script, .. } if config_dir == "rune"),
+            "Expected ConfigDirProcess::Script[rune], got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_classify_rune_plugin_dir() {
+        // Process referencing plugins/rune/ directly
+        let proc = make_process_info(
+            802,
+            "node",
+            vec![
+                "node",
+                "/Users/x/repos/rune-plugin/plugins/rune/scripts/echo-search/index.js",
+            ],
+        );
+        let result = classify_child(&proc, &[]);
+        assert!(
+            matches!(result, ChildKind::ConfigDirProcess { ref config_dir, .. } if config_dir == "rune"),
+            "Expected config_dir='rune', got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_classify_rune_plugin_hooks() {
+        // Hooks from rune plugin — "hooks/" check catches this first as HookScript
+        let proc = make_process_info(
+            803,
+            "bash",
+            vec![
+                "bash",
+                "/Users/x/.claude/plugins/cache/rune-marketplace/rune/1.0.0/hooks/pre-tool.sh",
+            ],
+        );
+        let result = classify_child(&proc, &[]);
+        assert!(
+            matches!(result, ChildKind::HookScript),
+            "Rune hooks should match HookScript first, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_describe_rune_script() {
+        let proc = make_process_info(
+            810,
+            "bash",
+            vec![
+                "bash",
+                "/Users/x/.claude/plugins/cache/rune-marketplace/rune/1.167.0/scripts/lib/workflow-lock.sh",
+            ],
+        );
+        let kind = ChildKind::ConfigDirProcess {
+            config_dir: "rune".to_string(),
+            process_type: ConfigProcessType::Script,
+        };
+        let desc = describe_child(&proc, &kind);
+        assert_eq!(desc, "lib/workflow-lock.sh");
     }
 }

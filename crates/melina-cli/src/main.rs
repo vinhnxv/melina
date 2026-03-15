@@ -327,6 +327,7 @@ fn render_with_sys(cli: &Cli, sys: &mut System) -> Result<()> {
                         melina_core::ConfigProcessType::Skill => "SKILL",
                         melina_core::ConfigProcessType::ShellSnapshot => "SHELL",
                         melina_core::ConfigProcessType::Hook => "HOOK",
+                        melina_core::ConfigProcessType::Script => "SCRIPT",
                         melina_core::ConfigProcessType::Other => "CONF",
                     };
                     format!("{}[{}]", type_label, config_dir)
