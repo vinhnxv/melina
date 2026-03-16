@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-03-16
+
+### Fixed
+- Confirm kill dialog now shows key hints (`y: confirm kill`, `n/any: cancel`) with dynamic height to prevent text clipping
+
+### Removed
+- Remove deprecated `classify_child_simple()` function (no callers remain)
+
 ## [0.4.1] - 2026-03-16
 
 ### Fixed
@@ -135,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address audit findings: orphan detection, performance, safety
 
 [0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
+[0.4.2]: https://github.com/vinhnxv/melina/releases/tag/v0.4.2
 [0.4.1]: https://github.com/vinhnxv/melina/releases/tag/v0.4.1
 [0.4.0]: https://github.com/vinhnxv/melina/releases/tag/v0.4.0
 [0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
