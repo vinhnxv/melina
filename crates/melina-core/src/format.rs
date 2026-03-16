@@ -37,43 +37,14 @@ pub fn format_uptime(start_time: u64) -> String {
 /// Format Unix epoch timestamp as human-readable local time string.
 #[must_use]
 pub fn format_timestamp(epoch: u64) -> String {
-    use std::process::Command;
+    use chrono::{Local, TimeZone};
     if epoch == 0 {
         return "unknown".to_string();
     }
-    // Try BSD/macOS date syntax first (`date -r epoch`), then GNU/Linux (`date -d @epoch`)
-    let bsd_result = Command::new("date")
-        .args(["-r", &epoch.to_string(), "+%Y-%m-%d %H:%M:%S"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        });
-
-    if let Some(result) = bsd_result {
-        return result;
-    }
-
-    // Fallback to GNU/Linux syntax
-    Command::new("date")
-        .args(["-d", &format!("@{epoch}"), "+%Y-%m-%d %H:%M:%S"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        })
+    Local
+        .timestamp_opt(epoch as i64, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 

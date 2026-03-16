@@ -176,18 +176,49 @@ fn check_team_owner_alive(team: &TeamInfo, sys: &System) -> bool {
         .join("teams")
         .join(&team.name)
         .join(".session");
-    let alive = std::fs::read_to_string(&session_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|session| {
-            session
-                .get("owner_pid")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-        .and_then(|pid_str| pid_str.parse::<u32>().ok())
-        .map(|pid| is_pid_alive(pid, sys));
-    alive.unwrap_or(false)
+
+    let content = match std::fs::read_to_string(&session_path) {
+        Ok(c) => c,
+        Err(_) => return false, // File doesn't exist or unreadable
+    };
+
+    let session: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                "Team '{}' marked zombie: .session file exists but cannot be parsed: {}",
+                team.name,
+                e
+            );
+            return false;
+        }
+    };
+
+    let pid_str = match session.get("owner_pid").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            tracing::warn!(
+                "Team '{}' marked zombie: .session file missing 'owner_pid' field",
+                team.name
+            );
+            return false;
+        }
+    };
+
+    let pid: u32 = match pid_str.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                "Team '{}' marked zombie: invalid owner_pid '{}': {}",
+                team.name,
+                pid_str,
+                e
+            );
+            return false;
+        }
+    };
+
+    is_pid_alive(pid, sys)
 }
 
 /// Minimum CPU usage to consider a teammate still working,
@@ -490,7 +521,7 @@ pub fn scan_zombies_with(sys: &System) -> Vec<ZombieEntry> {
 
                 if !pane.claude_alive {
                     // Claude process exited — check for idle/orphan shells
-                    if uptime >= IDLE_SHELL_UPTIME_MIN_SECS {
+                    if uptime >= IDLE_SHELL_UPTIME_MIN_SECS && pane.start_time > 0 {
                         entries.push(ZombieEntry::IdleShell {
                             socket_name: srv.socket_name.clone(),
                             pane_id: pane.pane_id.clone(),

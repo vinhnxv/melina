@@ -101,9 +101,20 @@ pub fn scan_teams() -> Vec<TeamInfo> {
 
 fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let config_path = team_dir.join("config.json");
-    // Intentionally use .ok()? — if config is missing or malformed, skip this team
-    let config_str = std::fs::read_to_string(&config_path).ok()?;
-    let config: serde_json::Value = serde_json::from_str(&config_str).ok()?;
+    let config_str = match std::fs::read_to_string(&config_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!("Skipping team {:?}: config.json not readable: {}", team_dir, e);
+            return None;
+        }
+    };
+    let config: serde_json::Value = match serde_json::from_str(&config_str) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("Skipping team {:?}: config.json malformed: {}", team_dir, e);
+            return None;
+        }
+    };
 
     let name = team_dir.file_name()?.to_string_lossy().to_string();
 
@@ -691,12 +702,17 @@ fn capture_pane_last_line(socket: &str, pane_id: &str) -> Option<String> {
 
 /// Capture the last N meaningful lines from a tmux pane.
 /// Returns empty Vec on failure or if no meaningful lines found.
-/// Validates socket format (claude-swarm-*) and pane_id format (%*).
+/// Validates socket format (claude-swarm-{digits}) and pane_id format (%*).
 pub fn capture_pane_last_lines(socket: &str, pane_id: &str, n: usize) -> Vec<String> {
     use std::process::Command;
 
     // Validate inputs to prevent command injection
     if !socket.starts_with("claude-swarm-") || !pane_id.starts_with('%') {
+        return Vec::new();
+    }
+    // Strict validation: suffix must be all digits (consistent with kill_tmux_server)
+    let suffix = &socket["claude-swarm-".len()..];
+    if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
         return Vec::new();
     }
 

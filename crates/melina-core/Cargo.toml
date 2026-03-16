@@ -12,3 +12,4 @@ anyhow.workspace = true
 dirs.workspace = true
 git2.workspace = true
 tracing.workspace = true
+chrono.workspace = true
