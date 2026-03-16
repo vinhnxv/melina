@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-03-16
+
+### Fixed
+- **SEC-001**: Add strict socket suffix validation in `capture_pane_last_lines()` to match `kill_tmux_server()` validation
+- **BUG-005**: Add `start_time > 0` check for idle shell detection, preventing false positives with uninitialized timestamps
+- **BUG-008**: Add `tracing::warn!` logging for `.session` parse failures in `check_team_owner_alive()`, improving debuggability
+
+### Changed
+- **QUAL-006**: Add `tracing::debug!` logging for skipped teams in `read_team()`
+- **QUAL-007**: Add `#[deprecated]` attribute to `classify_child_simple()` with migration guidance
+- **QUAL-008**: Replace external `date` command with pure Rust `chrono` implementation in `format_timestamp()`
+
+### Removed
+- **DEAD-001**: Remove unused `sol::ORANGE` and `sol::BLUE` constants from TUI color palette
+- **DEAD-002**: Remove unnecessary `#[allow(dead_code)]` from `sol` module (41+ active usages)
+
 ## [0.4.0] - 2026-03-16
 
 ### Added
@@ -119,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address audit findings: orphan detection, performance, safety
 
 [0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
+[0.4.1]: https://github.com/vinhnxv/melina/releases/tag/v0.4.1
 [0.4.0]: https://github.com/vinhnxv/melina/releases/tag/v0.4.0
 [0.3.3]: https://github.com/vinhnxv/melina/releases/tag/v0.3.3
 [0.3.2]: https://github.com/vinhnxv/melina/releases/tag/v0.3.2
