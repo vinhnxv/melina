@@ -84,17 +84,6 @@ pub fn classify_child(proc: &ProcessInfo, config_dirs: &[std::path::PathBuf]) ->
     ChildKind::Unknown
 }
 
-/// Backward-compatible classify without config dirs.
-///
-/// **Note:** This is a convenience wrapper for backward compatibility.
-/// Prefer `classify_child()` with explicit config dirs for full functionality.
-#[deprecated(
-    since = "0.5.0",
-    note = "Use classify_child() with explicit config_dirs"
-)]
-pub fn classify_child_simple(proc: &ProcessInfo) -> ChildKind {
-    classify_child(proc, &[])
-}
 
 /// Check if a command string references a known config directory and classify it.
 /// Matches both absolute paths (`/Users/x/.claude-true-yp/plugins/...`) and
