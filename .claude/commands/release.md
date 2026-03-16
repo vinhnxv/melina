@@ -41,6 +41,7 @@ allowed-tools:
 - Run `cargo test` — abort if any test fails
 - Run `cargo clippy` — abort if any warnings
 - Ensure working tree is clean (no uncommitted changes besides what we're about to do)
+- Check if `HOMEBREW_TAP_TOKEN` secret is configured (warn if missing, but continue)
 
 ## 2. Determine new version
 
@@ -101,10 +102,18 @@ If the release workflow fails:
 - Common issues:
   - `macos-13` not available → use `macos-latest`
   - Homebrew tap token expired → regenerate `HOMEBREW_TAP_TOKEN` secret
+  - `HOMEBREW_TAP_TOKEN` not set → workflow will skip homebrew update (not an error)
+
+If `HOMEBREW_TAP_TOKEN` is missing:
+1. Generate a new GitHub Personal Access Token with `repo` scope
+2. Go to repo Settings → Secrets and variables → Actions
+3. Add `HOMEBREW_TAP_TOKEN` with the token value
+4. Manually update the homebrew tap using `gh api` (see workflow for the command)
 
 ## Prerequisites
 
-- `HOMEBREW_TAP_TOKEN` secret must be set in GitHub repo settings
+- `HOMEBREW_TAP_TOKEN` secret should be set in GitHub repo settings for automatic tap updates
 - Token needs write access to `vinhnxv/homebrew-tap` repository
+- If the secret is not set, the release will still succeed but homebrew tap won't auto-update
 
 Report the new version and release URL when done.

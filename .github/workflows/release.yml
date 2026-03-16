@@ -67,7 +67,18 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - name: Check HOMEBREW_TAP_TOKEN
+        id: check-token
+        run: |
+          if [ -n "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
+            echo "has_token=true" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::HOMEBREW_TAP_TOKEN secret is not set. Homebrew tap will not be updated automatically."
+            echo "has_token=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download tarballs and compute SHA256
+        if: steps.check-token.outputs.has_token == 'true'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -81,6 +92,7 @@ jobs:
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Generate and push Homebrew formula
+        if: steps.check-token.outputs.has_token == 'true'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           TAG: ${{ github.ref_name }}
