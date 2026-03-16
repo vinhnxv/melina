@@ -13,9 +13,7 @@ mod status;
 mod teams;
 mod tree;
 
-pub use classify::{
-    ChildKind, ConfigProcessType, classify_child, describe_child,
-};
+pub use classify::{ChildKind, ConfigProcessType, classify_child, describe_child};
 pub use discovery::{
     ProcessInfo, create_process_system, refresh_process_system, scan, scan_simple,
 };

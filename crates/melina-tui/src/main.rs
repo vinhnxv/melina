@@ -1290,8 +1290,7 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
             // inner_width = dialog_width - 2 (borders)
             let inner_width = dialog_width.saturating_sub(2) as usize;
             let detail_text = format!(" {} — {}", entry.status, entry.detail);
-            let detail_wrapped_lines =
-                (detail_text.len() / inner_width.max(1)) as u16 + 1;
+            let detail_wrapped_lines = (detail_text.len() / inner_width.max(1)) as u16 + 1;
             // 2 (borders) + 1 (blank) + 1 (kill line) + detail_wrapped + 1 (blank) + 1 (hint) + 1 (padding)
             let dialog_height = (5 + detail_wrapped_lines + 2).min(area.height);
             let dialog_area = centered_rect(dialog_width, dialog_height, area);
@@ -1314,10 +1313,7 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                         Style::default().fg(sol::CYAN),
                     ),
                 ]),
-                Line::from(Span::styled(
-                    detail_text,
-                    Style::default().fg(sol::BASE00),
-                )),
+                Line::from(Span::styled(detail_text, Style::default().fg(sol::BASE00))),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled(
@@ -1331,10 +1327,7 @@ fn draw_kill_dialog(frame: &mut Frame, state: &KillDialogState) {
                             .fg(sol::YELLOW)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        " / any other key",
-                        Style::default().fg(sol::BASE00),
-                    ),
+                    Span::styled(" / any other key", Style::default().fg(sol::BASE00)),
                     Span::styled(": cancel", Style::default().fg(sol::BASE0)),
                 ]),
             ];

@@ -84,7 +84,6 @@ pub fn classify_child(proc: &ProcessInfo, config_dirs: &[std::path::PathBuf]) ->
     ChildKind::Unknown
 }
 
-
 /// Check if a command string references a known config directory and classify it.
 /// Matches both absolute paths (`/Users/x/.claude-true-yp/plugins/...`) and
 /// relative paths (`.claude/skills/...`, project-level `.claude/` dirs).
