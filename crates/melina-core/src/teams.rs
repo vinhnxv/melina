@@ -104,7 +104,11 @@ fn read_team(team_dir: &Path, config_dir: &Path) -> Option<TeamInfo> {
     let config_str = match std::fs::read_to_string(&config_path) {
         Ok(s) => s,
         Err(e) => {
-            tracing::debug!("Skipping team {:?}: config.json not readable: {}", team_dir, e);
+            tracing::debug!(
+                "Skipping team {:?}: config.json not readable: {}",
+                team_dir,
+                e
+            );
             return None;
         }
     };

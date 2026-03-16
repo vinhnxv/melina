@@ -88,7 +88,10 @@ pub fn classify_child(proc: &ProcessInfo, config_dirs: &[std::path::PathBuf]) ->
 ///
 /// **Note:** This is a convenience wrapper for backward compatibility.
 /// Prefer `classify_child()` with explicit config dirs for full functionality.
-#[deprecated(since = "0.5.0", note = "Use classify_child() with explicit config_dirs")]
+#[deprecated(
+    since = "0.5.0",
+    note = "Use classify_child() with explicit config_dirs"
+)]
 pub fn classify_child_simple(proc: &ProcessInfo) -> ChildKind {
     classify_child(proc, &[])
 }
@@ -330,7 +333,10 @@ fn extract_bash_description(cmd: &str) -> Option<String> {
         // Try to find the actual command after -c
         let parts: Vec<&str> = cmd.splitn(2, " -c ").collect();
         if parts.len() == 2 {
-            let actual_cmd = parts[1].trim().trim_start_matches('\'').trim_start_matches('"');
+            let actual_cmd = parts[1]
+                .trim()
+                .trim_start_matches('\'')
+                .trim_start_matches('"');
             // Get the first meaningful word (command name)
             let first_cmd = actual_cmd
                 .split_whitespace()
@@ -408,11 +414,17 @@ mod tests {
 
         // Test "/mcp/" in command
         let proc = make_process_info(101, "node", vec!["/mcp/some-server"]);
-        assert!(matches!(classify_child(&proc, &[]), ChildKind::McpServer { .. }));
+        assert!(matches!(
+            classify_child(&proc, &[]),
+            ChildKind::McpServer { .. }
+        ));
 
         // Test "mcp-server" in command
         let proc = make_process_info(102, "node", vec!["mcp-server-foo"]);
-        assert!(matches!(classify_child(&proc, &[]), ChildKind::McpServer { .. }));
+        assert!(matches!(
+            classify_child(&proc, &[]),
+            ChildKind::McpServer { .. }
+        ));
     }
 
     #[test]
@@ -423,7 +435,10 @@ mod tests {
 
         // Test case insensitivity
         let proc = make_process_info(201, "Claude", vec!["Claude"]);
-        assert!(matches!(classify_child(&proc, &[]), ChildKind::Teammate { .. }));
+        assert!(matches!(
+            classify_child(&proc, &[]),
+            ChildKind::Teammate { .. }
+        ));
 
         // Test versioned binary name (macOS symlink resolution)
         // Process name is version number, but cmd has versioned path
@@ -436,7 +451,10 @@ mod tests {
                 "worker-1",
             ],
         );
-        assert!(matches!(classify_child(&proc, &[]), ChildKind::Teammate { .. }));
+        assert!(matches!(
+            classify_child(&proc, &[]),
+            ChildKind::Teammate { .. }
+        ));
     }
 
     #[test]
@@ -559,7 +577,13 @@ mod tests {
         );
         let result = classify_child(&proc, &config_dirs);
         assert!(
-            matches!(result, ChildKind::ConfigDirProcess { process_type: ConfigProcessType::Plugin, .. }),
+            matches!(
+                result,
+                ChildKind::ConfigDirProcess {
+                    process_type: ConfigProcessType::Plugin,
+                    ..
+                }
+            ),
             "Expected ConfigDirProcess::Plugin, got {:?}",
             result
         );
@@ -582,7 +606,13 @@ mod tests {
         );
         let result = classify_child(&proc, &config_dirs);
         assert!(
-            matches!(result, ChildKind::ConfigDirProcess { process_type: ConfigProcessType::Skill, .. }),
+            matches!(
+                result,
+                ChildKind::ConfigDirProcess {
+                    process_type: ConfigProcessType::Skill,
+                    ..
+                }
+            ),
             "Expected ConfigDirProcess::Skill for relative .claude/ path, got {:?}",
             result
         );
@@ -591,14 +621,7 @@ mod tests {
     #[test]
     fn test_classify_config_dir_hooks_relative() {
         // .claude/hooks/ should be classified as ConfigDirProcess::Hook
-        let proc = make_process_info(
-            604,
-            "bash",
-            vec![
-                "bash",
-                ".claude/hooks/pre-tool-use.sh",
-            ],
-        );
+        let proc = make_process_info(604, "bash", vec!["bash", ".claude/hooks/pre-tool-use.sh"]);
         let result = classify_child(&proc, &[]);
         // Note: "hooks/" in cmd also matches HookScript check (higher priority).
         // The hook check runs BEFORE config dir check, so this will be HookScript.
@@ -623,7 +646,13 @@ mod tests {
         );
         let result = classify_child(&proc, &config_dirs);
         assert!(
-            matches!(result, ChildKind::ConfigDirProcess { process_type: ConfigProcessType::ShellSnapshot, .. }),
+            matches!(
+                result,
+                ChildKind::ConfigDirProcess {
+                    process_type: ConfigProcessType::ShellSnapshot,
+                    ..
+                }
+            ),
             "Expected ConfigDirProcess::ShellSnapshot, got {:?}",
             result
         );

@@ -117,9 +117,9 @@ impl ProcessInfo {
         }
 
         // Exclude Claude desktop app processes (check with original case for .app paths)
-        self.cmd.iter().all(|arg| {
-            !arg.contains("Claude.app") && !arg.to_lowercase().contains("claude.app")
-        })
+        self.cmd
+            .iter()
+            .all(|arg| !arg.contains("Claude.app") && !arg.to_lowercase().contains("claude.app"))
     }
 
     /// Check if this process references any known Claude config directory.
@@ -196,9 +196,11 @@ pub fn validate_process_identity(sys: &System, pid: u32, expected_cmd_fragment: 
     sys.processes()
         .get(&Pid::from_u32(pid))
         .is_some_and(|proc_| {
-            proc_.cmd()
-                .iter()
-                .any(|arg| arg.to_string_lossy().to_lowercase().contains(expected_cmd_fragment))
+            proc_.cmd().iter().any(|arg| {
+                arg.to_string_lossy()
+                    .to_lowercase()
+                    .contains(expected_cmd_fragment)
+            })
         })
 }
 

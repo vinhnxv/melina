@@ -16,7 +16,9 @@ mod tree;
 pub use classify::{
     ChildKind, ConfigProcessType, classify_child, classify_child_simple, describe_child,
 };
-pub use discovery::{ProcessInfo, create_process_system, refresh_process_system, scan, scan_simple};
+pub use discovery::{
+    ProcessInfo, create_process_system, refresh_process_system, scan, scan_simple,
+};
 pub use format::{format_bytes, format_timestamp, format_uptime};
 pub use git::GitContext;
 pub use health::{
