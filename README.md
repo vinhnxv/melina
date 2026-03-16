@@ -82,7 +82,7 @@ Without tmux mode, teammates run as background processes that are harder to insp
 curl -fsSL https://raw.githubusercontent.com/vinhnxv/melina/main/install.sh | bash
 ```
 
-Tự động detect OS và architecture (macOS ARM/Intel, Linux x86_64), tải binary từ GitHub Releases và cài vào `/usr/local/bin`. Tuỳ chỉnh đường dẫn cài đặt:
+Automatically detects OS and architecture (macOS ARM/Intel, Linux x86_64), downloads the binary from GitHub Releases, and installs to `/usr/local/bin`. To customize the install path:
 
 ```bash
 INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/vinhnxv/melina/main/install.sh | bash
